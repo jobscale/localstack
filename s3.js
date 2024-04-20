@@ -15,7 +15,7 @@ const { endpoint, Bucket } = {
     endpoint: 'https://lo-stack.jsx.jp',
     Bucket: 'test-store',
   },
-}['test2'];
+}['test1'];
 const logger = console;
 const s3 = new S3Client({
   endpoint,
@@ -66,17 +66,17 @@ class App {
 
   async main() {
     const key = 'uni/train/fast/dataset';
-    const data = JSON.stringify({ ts: Date.now(), color: ['red', 'green', 'blue'] });
+    const data1 = JSON.stringify({ ts: Date.now(), color: ['red', 'green', 'blue'] });
     await this.createBucket();
-    // await this.putItem(key, data);
-    const item = await this.getItem(key)
+    await this.putItem(key, data1);
+    const item1 = await this.getItem(key)
     .then(res => fetchObjectChunk(res));
-    logger.info({ item: item.toString('utf8') });
+    logger.info({ item1: item1.toString('utf8') });
 
     const fname = '/home/jobscale/Documents/contents/0-67.jpg';
     const key2 = 'uni/train/fast/dataset2';
     const data2 = fs.readFileSync(fname);
-    // await this.putItem(key2, data2);
+    await this.putItem(key2, data2);
     const item2 = await this.getItem(key2)
     .then(res => fetchObjectChunk(res));
     logger.info({
@@ -85,17 +85,25 @@ class App {
       verify: data2.toString('base64') === item2.toString('base64'),
     });
 
-    return item2;
+    debugger;
+    const item11 = await this.getItem(key)
+    .then(res => fetchObjectChunk(res));
+    const item21 = await this.getItem(key2)
+    .then(res => fetchObjectChunk(res));
+    logger.debug({
+      item11: item11.length,
+      item21: item21.length,
+    });
+
+    return { ok: true };
   }
 }
 
 const app = new App();
 app.main()
 .catch(e => {
-  debugger;
   logger.error({ name: e.name, message: e.message });
 })
 .then(res => {
-  debugger;
   logger.info(JSON.stringify(res, null, 2));
 });
