@@ -176,7 +176,8 @@ HEALTHCHECK --interval=10s --start-period=15s --retries=5 --timeout=10s CMD /opt
 VOLUME /var/lib/localstack
 
 # mark the image version
-RUN touch /usr/lib/localstack/.community-version
+# RUN touch /usr/lib/localstack/.community-version
+RUN touch /usr/lib/localstack/.pro-version
 
 LABEL authors="LocalStack Contributors"
 LABEL maintainer="LocalStack Team (info@localstack.cloud)"
