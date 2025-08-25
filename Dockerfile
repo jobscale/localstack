@@ -127,7 +127,7 @@ RUN --mount=type=cache,target=/root/.cache\
 FROM base
 COPY --from=builder /opt/code/localstack/.venv /opt/code/localstack/.venv
 # The build version is set in the docker-helper.sh script to be the output of setuptools_scm
-ARG LOCALSTACK_BUILD_VERSION
+ARG LOCALSTACK_BUILD_VERSION=v4.7.0
 
 # add project files necessary to install all dependencies
 ADD Makefile pyproject.toml ./
