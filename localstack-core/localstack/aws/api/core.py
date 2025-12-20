@@ -13,6 +13,7 @@ from botocore.model import OperationModel, ServiceModel
 from rolo.gateway import RequestContext as RoloRequestContext
 
 from localstack.aws.connect import InternalRequestParameters
+from localstack.aws.spec import ProtocolName
 from localstack.http import Request, Response
 from localstack.utils.strings import long_uid
 
@@ -41,7 +42,7 @@ class ServiceException(Exception):
     message: str
 
     def __init__(self, *args: Any, **kwargs: Any):
-        super(ServiceException, self).__init__(*args)
+        super().__init__(*args)
 
         if len(args) >= 1:
             self.message = args[0]
@@ -60,7 +61,7 @@ class CommonServiceException(ServiceException):
     """
 
     def __init__(self, code: str, message: str, status_code: int = 400, sender_fault: bool = False):
-        super(CommonServiceException, self).__init__(message)
+        super().__init__(message)
         self.code = code
         self.status_code = status_code
         self.sender_fault = sender_fault
@@ -88,6 +89,8 @@ class RequestContext(RoloRequestContext):
     """The underlying incoming HTTP request."""
     service: ServiceModel | None
     """The botocore ServiceModel of the service the request is made to."""
+    protocol: ProtocolName | None
+    """The botocore Protocol for the service the request is made to."""
     operation: OperationModel | None
     """The botocore OperationModel of the AWS operation being invoked."""
     region: str
@@ -112,6 +115,7 @@ class RequestContext(RoloRequestContext):
     def __init__(self, request: Request):
         super().__init__(request)
         self.service = None
+        self.protocol = None
         self.operation = None
         self.region = None  # type: ignore[assignment]  # type=str, because we know it will always be set downstream
         self.partition = "aws"  # Sensible default - will be overwritten by region-handler

@@ -10,11 +10,12 @@ import yaml
 from botocore.exceptions import ClientError, WaiterError
 from localstack_snapshot.snapshots.transformer import SortingTransformer
 from tests.aws.services.cloudformation.conftest import (
-    skip_if_v1_provider,
+    skip_if_legacy_engine,
     skipped_v2_items,
 )
 
 from localstack.aws.api.cloudformation import Capability
+from localstack.aws.connect import ServiceLevelClientFactory
 from localstack.services.cloudformation.engine.entities import StackIdentifier
 from localstack.services.cloudformation.engine.yaml_parser import parse_yaml
 from localstack.testing.aws.util import is_aws_cloud
@@ -97,7 +98,7 @@ class TestStacksApi:
         ]
         snapshot.match("describe_stack", response)
 
-    @skip_if_v1_provider(reason="Lots of fields not in parity")
+    @skip_if_legacy_engine()
     @markers.aws.validated
     @markers.snapshot.skip_snapshot_verify(
         paths=[
@@ -106,9 +107,14 @@ class TestStacksApi:
             "$..StackStatusReason",
         ]
     )
-    def test_stack_description_lifecycle(self, snapshot, aws_client, cleanups):
+    @pytest.mark.parametrize(
+        "tags", [None, [{"Key": "foo", "Value": "bar"}]], ids=["no-tags", "with-tags"]
+    )
+    def test_stack_description_lifecycle(self, snapshot, aws_client, cleanups, tags):
         """
-        Test when and how the description gets set
+        Test when and how the stack metadata gets set:
+        * tags
+        * description
         """
         snapshot.add_transformer(snapshot.transform.cloudformation_api())
         template = {
@@ -126,12 +132,17 @@ class TestStacksApi:
         }
         stack_name = f"stack-{short_uid()}"
         change_set_name = f"cs-{short_uid()}"
-        change_set = aws_client.cloudformation.create_change_set(
-            StackName=stack_name,
-            ChangeSetName=change_set_name,
-            ChangeSetType="CREATE",
-            TemplateBody=json.dumps(template),
-        )
+
+        kwargs = {
+            "StackName": stack_name,
+            "ChangeSetName": change_set_name,
+            "ChangeSetType": "CREATE",
+            "TemplateBody": json.dumps(template),
+        }
+        if tags is not None:
+            kwargs["Tags"] = tags
+
+        change_set = aws_client.cloudformation.create_change_set(**kwargs)
         change_set_id = change_set["Id"]
         stack_id = change_set["StackId"]
 
@@ -171,6 +182,18 @@ class TestStacksApi:
             )
 
             snapshot.match("stack_response", e.value.response)
+
+    @markers.aws.validated
+    def test_create_stack_url_as_template(self, snapshot, aws_client):
+        snapshot.add_transformer(snapshot.transform.cloudformation_api())
+
+        stack_name = f"stack-{short_uid()}"
+
+        template_url = "https://raw.githubusercontent.com/aws-cloudformation/aws-cloudformation-templates/refs/heads/main/EC2/InstanceWithCfnInit.yaml"
+
+        with pytest.raises(ClientError) as e:
+            aws_client.cloudformation.create_stack(StackName=stack_name, TemplateBody=template_url)
+        snapshot.match("stack_create_ec2", e.value)
 
     @markers.aws.validated
     @pytest.mark.parametrize("fileformat", ["yaml", "json"])
@@ -317,6 +340,7 @@ class TestStacksApi:
         )
 
     @markers.aws.validated
+    @skip_if_legacy_engine()
     def test_update_stack_actual_update(self, deploy_cfn_template, aws_client):
         template = load_file(
             os.path.join(os.path.dirname(__file__), "../../../templates/sqs_queue_update.yml")
@@ -451,6 +475,7 @@ class TestStacksApi:
         ]
         assert len(updated_resources) == length_expected
 
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_create_stack_with_custom_id(
         self, aws_client, cleanups, account_id, region_name, set_resource_custom_id
@@ -679,8 +704,6 @@ def test_events_resource_types(deploy_cfn_template, snapshot, aws_client):
 
 @markers.aws.validated
 def test_list_parameter_type(aws_client, deploy_cfn_template, cleanups):
-    stack_name = f"test-stack-{short_uid()}"
-    cleanups.append(lambda: aws_client.cloudformation.delete_stack(StackName=stack_name))
     stack = deploy_cfn_template(
         template_path=os.path.join(
             os.path.dirname(__file__), "../../../templates/cfn_parameter_list_type.yaml"
@@ -691,6 +714,35 @@ def test_list_parameter_type(aws_client, deploy_cfn_template, cleanups):
     )
 
     assert stack.outputs["ParamValue"] == "foo|bar"
+
+
+@markers.aws.validated
+def test_subnet_id_parameter_type(aws_client, deploy_cfn_template, cleanups, snapshot):
+    vpc_id = aws_client.ec2.create_vpc(CidrBlock="10.0.0.0/16")["Vpc"]["VpcId"]
+    cleanups.append(lambda: aws_client.ec2.delete_vpc(VpcId=vpc_id))
+    aws_client.ec2.get_waiter("vpc_available").wait(VpcIds=[vpc_id])
+    subnet_id_1 = aws_client.ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.0.0.0/24")["Subnet"][
+        "SubnetId"
+    ]
+    cleanups.append(lambda: aws_client.ec2.delete_subnet(SubnetId=subnet_id_1))
+    subnet_id_2 = aws_client.ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.0.1.0/24")["Subnet"][
+        "SubnetId"
+    ]
+    cleanups.append(lambda: aws_client.ec2.delete_subnet(SubnetId=subnet_id_2))
+
+    subnets_list = ",".join([subnet_id_1, subnet_id_2])
+    stack = deploy_cfn_template(
+        template_path=os.path.join(
+            os.path.dirname(__file__), "../../../templates/cfn_parameter_list_subnet_id_type.yaml"
+        ),
+        parameters={
+            "ParamsList": subnets_list,
+        },
+    )
+
+    snapshot.add_transformer(snapshot.transform.regex(subnet_id_1, "subnet-id-1"))
+    snapshot.add_transformer(snapshot.transform.regex(subnet_id_2, "subnet-id-2"))
+    snapshot.match("outputs", stack.outputs)
 
 
 @markers.aws.validated
@@ -854,9 +906,8 @@ def test_name_conflicts(aws_client, snapshot, cleanups):
 
 @markers.aws.validated
 def test_describe_stack_events_errors(aws_client, snapshot):
-    with pytest.raises(aws_client.cloudformation.exceptions.ClientError) as e:
+    with pytest.raises(botocore.exceptions.ParamValidationError) as e:
         aws_client.cloudformation.describe_stack_events()
-    snapshot.match("describe_stack_events_no_stack_name", e.value.response)
     with pytest.raises(aws_client.cloudformation.exceptions.ClientError) as e:
         aws_client.cloudformation.describe_stack_events(StackName="does-not-exist")
     snapshot.match("describe_stack_events_stack_not_found", e.value.response)
@@ -949,7 +1000,7 @@ def test_stack_deploy_order(deploy_cfn_template, aws_client, snapshot, deploy_or
     snapshot.match("events", filtered_events)
 
 
-@skip_if_v1_provider("Not supported with v1 provider")
+@skip_if_legacy_engine()
 @markers.aws.validated
 @pytest.mark.parametrize(
     "deletions",
@@ -1215,7 +1266,7 @@ def test_non_existing_stack_message(aws_client, snapshot):
     snapshot.match("Error", ex.value.response)
 
 
-@skip_if_v1_provider("Not implemented for V1 provider")
+@skip_if_legacy_engine()
 @markers.aws.validated
 def test_no_parameters_given(aws_client, deploy_cfn_template, snapshot):
     template_path = os.path.join(
@@ -1224,3 +1275,35 @@ def test_no_parameters_given(aws_client, deploy_cfn_template, snapshot):
     with pytest.raises(ClientError) as exc_info:
         deploy_cfn_template(template_path=template_path)
     snapshot.match("deploy-error", exc_info.value)
+
+
+@markers.aws.validated
+def test_blank_parameter_value(aws_client: ServiceLevelClientFactory, cleanups):
+    """
+    While testing the new engine, I found that we don't handle the parameter value being blank well
+    """
+    template = {
+        "Parameters": {
+            "MyFoo": {
+                "Type": "String",
+            },
+        },
+        "Resources": {
+            "MyTopic": {
+                "Type": "AWS::SNS::Topic",
+                "Properties": {
+                    "DisplayName": {"Ref": "MyFoo"},
+                },
+            },
+        },
+    }
+
+    res = aws_client.cloudformation.create_stack(
+        TemplateBody=json.dumps(template),
+        StackName=f"stack-{short_uid()}",
+        Parameters=[{"ParameterKey": "MyFoo", "ParameterValue": ""}],
+    )
+    stack_id = res["StackId"]
+    cleanups.append(lambda: aws_client.cloudformation.delete_stack(StackName=stack_id))
+
+    aws_client.cloudformation.get_waiter("stack_create_complete").wait(StackName=stack_id)

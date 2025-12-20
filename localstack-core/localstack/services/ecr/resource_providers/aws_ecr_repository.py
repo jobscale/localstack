@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import TypedDict
 
 import localstack.services.cloudformation.provider_utils as util
-from localstack.constants import AWS_REGION_US_EAST_1, DEFAULT_AWS_ACCOUNT_ID
 from localstack.services.cloudformation.resource_provider import (
     OperationStatus,
     ProgressEvent,
@@ -90,6 +89,10 @@ class ECRRepositoryProvider(ResourceProvider[ECRRepositoryProperties]):
 
         """
         model = request.desired_state
+        model["RepositoryName"] = (
+            model.get("RepositoryName")
+            or util.generate_default_name(request.stack_name, request.logical_resource_id).lower()
+        )
 
         default_repos_per_stack[request.stack_name] = model["RepositoryName"]
         LOG.warning(
@@ -98,7 +101,7 @@ class ECRRepositoryProvider(ResourceProvider[ECRRepositoryProperties]):
         model.update(
             {
                 "Arn": arns.ecr_repository_arn(
-                    model["RepositoryName"], DEFAULT_AWS_ACCOUNT_ID, AWS_REGION_US_EAST_1
+                    model["RepositoryName"], request.account_id, request.region_name
                 ),
                 "RepositoryUri": "http://localhost:4566",
                 "ImageTagMutability": "MUTABLE",

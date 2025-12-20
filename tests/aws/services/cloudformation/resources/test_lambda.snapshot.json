@@ -376,7 +376,7 @@
     }
   },
   "tests/aws/services/cloudformation/resources/test_lambda.py::TestCfnLambdaIntegrations::test_cfn_lambda_sqs_source": {
-    "recorded-date": "30-10-2024, 14:48:16",
+    "recorded-date": "27-08-2025, 09:35:51",
     "recorded-content": {
       "stack_resources": {
         "StackResources": [
@@ -548,7 +548,7 @@
           "CreatedTimestamp": "timestamp",
           "DelaySeconds": "0",
           "LastModifiedTimestamp": "timestamp",
-          "MaximumMessageSize": "262144",
+          "MaximumMessageSize": "1048576",
           "MessageRetentionPeriod": "345600",
           "QueueArn": "arn:<partition>:sqs:<region>:111111111111:<resource:2>",
           "ReceiveMessageWaitTimeSeconds": "0",
@@ -860,7 +860,7 @@
     }
   },
   "tests/aws/services/cloudformation/resources/test_lambda.py::TestCfnLambdaIntegrations::test_cfn_lambda_dynamodb_source": {
-    "recorded-date": "12-10-2024, 10:46:17",
+    "recorded-date": "13-10-2025, 21:45:29",
     "recorded-content": {
       "stack_resources": {
         "StackResources": [
@@ -1069,7 +1069,12 @@
           "TableId": "<uuid:2>",
           "TableName": "<resource:7>",
           "TableSizeBytes": 0,
-          "TableStatus": "ACTIVE"
+          "TableStatus": "ACTIVE",
+          "WarmThroughput": {
+            "ReadUnitsPerSecond": 5,
+            "Status": "ACTIVE",
+            "WriteUnitsPerSecond": 5
+          }
         },
         "ResponseMetadata": {
           "HTTPHeaders": {},

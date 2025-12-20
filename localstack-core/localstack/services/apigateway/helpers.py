@@ -23,7 +23,7 @@ from localstack.aws.api.apigateway import (
     IntegrationType,
     Model,
     NotFoundException,
-    PutRestApiRequest,
+    PutMode,
     RequestValidator,
 )
 from localstack.constants import (
@@ -39,8 +39,7 @@ from localstack.services.apigateway.models import (
     apigateway_stores,
 )
 from localstack.utils import common
-from localstack.utils.json import parse_json_or_yaml
-from localstack.utils.strings import short_uid, to_bytes, to_str
+from localstack.utils.strings import short_uid, to_bytes
 from localstack.utils.urls import localstack_host
 
 LOG = logging.getLogger(__name__)
@@ -367,10 +366,7 @@ def resolve_references(data: dict, rest_api_id, allow_recursive=True) -> dict:
 
 def path_based_url(api_id: str, stage_name: str, path: str) -> str:
     """Return URL for inbound API gateway for given API ID, stage name, and path"""
-    pattern = "%s/restapis/{api_id}/{stage_name}/%s{path}" % (
-        config.external_service_url(),
-        PATH_USER_REQUEST,
-    )
+    pattern = f"{config.external_service_url()}/restapis/{{api_id}}/{{stage_name}}/{PATH_USER_REQUEST}{{path}}"
     return pattern.format(api_id=api_id, stage_name=stage_name, path=path)
 
 
@@ -475,11 +471,9 @@ def add_documentation_parts(rest_api_container, documentation):
 
 
 def import_api_from_openapi_spec(
-    rest_api: MotoRestAPI, context: RequestContext, request: PutRestApiRequest
+    rest_api: MotoRestAPI, context: RequestContext, open_api_spec: dict, mode: PutMode
 ) -> tuple[MotoRestAPI, list[str]]:
     """Import an API from an OpenAPI spec document"""
-    body = parse_json_or_yaml(to_str(request["body"].read()))
-
     warnings = []
 
     # TODO There is an issue with the botocore specs so the parameters doesn't get populated as it should
@@ -487,15 +481,14 @@ def import_api_from_openapi_spec(
     # query_params = request.get("parameters") or {}
     query_params: dict = context.request.values.to_dict()
 
-    resolved_schema = resolve_references(copy.deepcopy(body), rest_api_id=rest_api.id)
+    resolved_schema = resolve_references(copy.deepcopy(open_api_spec), rest_api_id=rest_api.id)
     account_id = context.account_id
     region_name = context.region
 
     # TODO:
-    # 1. validate the "mode" property of the spec document, "merge" or "overwrite", and properly apply it
+    # 1. properly apply the mode (overwrite or merge)
     #    for now, it only considers it for the binaryMediaTypes
     # 2. validate the document type, "swagger" or "openapi"
-    mode = request.get("mode", "merge")
 
     rest_api.version = (
         str(version) if (version := resolved_schema.get("info", {}).get("version")) else None

@@ -144,38 +144,44 @@
     }
   },
   "tests/aws/services/kinesis/test_kinesis.py::TestKinesis::test_subscribe_to_shard": {
-    "recorded-date": "26-08-2022, 09:33:29",
+    "recorded-date": "19-08-2025, 13:10:10",
     "recorded-content": {
-      "Records": [
+      "Events": [
         {
-          "SequenceNumber": "<sequence_number:1>",
-          "ApproximateArrivalTimestamp": "timestamp",
-          "Data": "b'Hello world_0'",
-          "PartitionKey": "1"
-        },
-        {
-          "SequenceNumber": "<sequence_number:2>",
-          "ApproximateArrivalTimestamp": "timestamp",
-          "Data": "b'Hello world_1'",
-          "PartitionKey": "1"
-        },
-        {
-          "SequenceNumber": "<sequence_number:3>",
-          "ApproximateArrivalTimestamp": "timestamp",
-          "Data": "b'Hello world_2'",
-          "PartitionKey": "1"
-        },
-        {
-          "SequenceNumber": "<sequence_number:4>",
-          "ApproximateArrivalTimestamp": "timestamp",
-          "Data": "b'Hello world_3'",
-          "PartitionKey": "1"
-        },
-        {
-          "SequenceNumber": "<sequence_number:5>",
-          "ApproximateArrivalTimestamp": "timestamp",
-          "Data": "b'Hello world_4'",
-          "PartitionKey": "1"
+          "Records": [
+            {
+              "SequenceNumber": "<sequence_number:1>",
+              "ApproximateArrivalTimestamp": "timestamp",
+              "Data": "b'Hello world_0'",
+              "PartitionKey": "1"
+            },
+            {
+              "SequenceNumber": "<sequence_number:2>",
+              "ApproximateArrivalTimestamp": "timestamp",
+              "Data": "b'Hello world_1'",
+              "PartitionKey": "1"
+            },
+            {
+              "SequenceNumber": "<sequence_number:3>",
+              "ApproximateArrivalTimestamp": "timestamp",
+              "Data": "b'Hello world_2'",
+              "PartitionKey": "1"
+            },
+            {
+              "SequenceNumber": "<sequence_number:4>",
+              "ApproximateArrivalTimestamp": "timestamp",
+              "Data": "b'Hello world_3'",
+              "PartitionKey": "1"
+            },
+            {
+              "SequenceNumber": "<sequence_number:5>",
+              "ApproximateArrivalTimestamp": "timestamp",
+              "Data": "b'Hello world_4'",
+              "PartitionKey": "1"
+            }
+          ],
+          "ContinuationSequenceNumber": "<continuation_sequence_number:1>",
+          "MillisBehindLatest": 0
         }
       ]
     }
@@ -219,6 +225,95 @@
           "PartitionKey": "1"
         }
       ]
+    }
+  },
+  "tests/aws/services/kinesis/test_kinesis.py::TestKinesis::test_cbor_exceptions": {
+    "recorded-date": "04-09-2025, 16:59:26",
+    "recorded-content": {
+      "cbor-error": {
+        "__type": "ResourceNotFoundException",
+        "message": "Stream wrong-stream-name under account 111111111111 not found."
+      }
+    }
+  },
+  "tests/aws/services/kinesis/test_kinesis.py::TestKinesis::test_resource_policy_crud": {
+    "recorded-date": "01-08-2025, 13:00:05",
+    "recorded-content": {
+      "default_policy_if_not_set": {
+        "Policy": {},
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "put_resource_policy_if_not_set": {
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get_resource_policy_after_set": {
+        "Policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowCrossAccountWrite",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": "arn:<partition>:iam::111111111111:root"
+              },
+              "Action": "kinesis:PutRecord",
+              "Resource": "arn:<partition>:kinesis:<region>:111111111111:<stream-name>"
+            }
+          ]
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "update_resource_policy": {
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get_resource_policy_after_update": {
+        "Policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowCrossAccountReadWrite",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": "arn:<partition>:iam::111111111111:root"
+              },
+              "Action": [
+                "kinesis:PutRecord",
+                "kinesis:GetRecords"
+              ],
+              "Resource": "arn:<partition>:kinesis:<region>:111111111111:<stream-name>"
+            }
+          ]
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "delete_resource_policy": {
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get_resource_policy_after_delete": {
+        "Policy": {},
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
     }
   }
 }

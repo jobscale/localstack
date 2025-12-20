@@ -2,11 +2,14 @@ import datetime
 import json
 import string
 from operator import itemgetter
+from time import sleep
 from urllib.parse import urlencode
 
 import pytest
+from botocore.config import Config
 from botocore.exceptions import ClientError
 from localstack_snapshot.snapshots.transformer import SortingTransformer
+from moto.wafv2.models import US_EAST_1_REGION
 
 from localstack.testing.pytest import markers
 from localstack.utils.strings import long_uid, short_uid
@@ -490,8 +493,6 @@ class TestS3ObjectCRUD:
 
 
 class TestS3Multipart:
-    # TODO: write a validated test for UploadPartCopy preconditions
-
     @markers.aws.validated
     @markers.snapshot.skip_snapshot_verify(paths=["$..PartNumberMarker"])  # TODO: investigate this
     def test_upload_part_copy_range(self, aws_client, s3_bucket, snapshot):
@@ -611,6 +612,510 @@ class TestS3Multipart:
 
         list_parts = aws_client.s3.list_parts(Bucket=s3_bucket, Key=key, UploadId=upload_id)
         snapshot.match("list-parts", list_parts)
+
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        paths=["$..Owner.DisplayName"],
+    )
+    def test_upload_part_copy_with_copy_source_if_match_success(
+        self, aws_client, s3_bucket, snapshot
+    ):
+        snapshot.add_transformer(
+            [
+                snapshot.transform.key_value("Bucket", reference_replacement=False),
+                snapshot.transform.key_value("Location"),
+                snapshot.transform.key_value("UploadId"),
+                snapshot.transform.key_value("DisplayName", reference_replacement=False),
+                snapshot.transform.key_value("ID", reference_replacement=False),
+                snapshot.transform.key_value("ETag"),
+            ]
+        )
+
+        # Set up the source object.
+        source_key = "source_file.txt"
+        content = "0123456789"
+        put_source_object = aws_client.s3.put_object(Bucket=s3_bucket, Key=source_key, Body=content)
+
+        # Set up the multi-part upload.
+        multi_part_upload_key = "destination_file.txt"
+        create_multipart_upload = aws_client.s3.create_multipart_upload(
+            Bucket=s3_bucket, Key=multi_part_upload_key
+        )
+        upload_id = create_multipart_upload["UploadId"]
+
+        # Uploading shouldn't raise an exception
+        upload_part_copy = aws_client.s3.upload_part_copy(
+            Bucket=s3_bucket,
+            UploadId=upload_id,
+            Key=multi_part_upload_key,
+            PartNumber=1,
+            CopySource=f"{s3_bucket}/{source_key}",
+            CopySourceIfMatch=put_source_object["ETag"],
+        )
+        snapshot.match("upload-part-copy-if-match", upload_part_copy)
+
+        # Check parts were uploaded successfully
+        list_parts = aws_client.s3.list_parts(
+            Bucket=s3_bucket, Key=multi_part_upload_key, UploadId=upload_id
+        )
+        snapshot.match("list-parts", list_parts)
+
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        paths=["$..Owner.DisplayName"],
+    )
+    def test_upload_part_copy_with_copy_source_if_match_none_success(
+        self, aws_client, s3_bucket, snapshot
+    ):
+        snapshot.add_transformer(
+            [
+                snapshot.transform.key_value("Bucket", reference_replacement=False),
+                snapshot.transform.key_value("Location"),
+                snapshot.transform.key_value("UploadId"),
+                snapshot.transform.key_value("DisplayName", reference_replacement=False),
+                snapshot.transform.key_value("ID", reference_replacement=False),
+                snapshot.transform.key_value("ETag"),
+            ]
+        )
+
+        # Set up the source object.
+        source_key = "source_file.txt"
+        content = "0123456789"
+        aws_client.s3.put_object(Bucket=s3_bucket, Key=source_key, Body=content)
+
+        # Set up the multi-part upload.
+        multi_part_upload_key = "destination_file.txt"
+        create_multipart_upload = aws_client.s3.create_multipart_upload(
+            Bucket=s3_bucket, Key=multi_part_upload_key
+        )
+        upload_id = create_multipart_upload["UploadId"]
+
+        # Uploading shouldn't raise an exception
+        upload_part_copy = aws_client.s3.upload_part_copy(
+            Bucket=s3_bucket,
+            UploadId=upload_id,
+            Key=multi_part_upload_key,
+            PartNumber=1,
+            CopySource=f"{s3_bucket}/{source_key}",
+            CopySourceIfNoneMatch="none-match",
+        )
+        snapshot.match("upload-part-copy-if-none-match", upload_part_copy)
+
+        # Check parts were uploaded successfully
+        list_parts = aws_client.s3.list_parts(
+            Bucket=s3_bucket, Key=multi_part_upload_key, UploadId=upload_id
+        )
+        snapshot.match("list-parts", list_parts)
+
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        paths=["$..Owner.DisplayName"],
+    )
+    def test_upload_part_copy_with_copy_source_if_unmodified_since_success(
+        self, aws_client, s3_bucket, snapshot
+    ):
+        snapshot.add_transformer(
+            [
+                snapshot.transform.key_value("Bucket", reference_replacement=False),
+                snapshot.transform.key_value("Location"),
+                snapshot.transform.key_value("UploadId"),
+                snapshot.transform.key_value("DisplayName", reference_replacement=False),
+                snapshot.transform.key_value("ID", reference_replacement=False),
+                snapshot.transform.key_value("ETag"),
+            ]
+        )
+
+        # Set up the source object.
+        source_key = "source_file.txt"
+        content = "0123456789"
+        aws_client.s3.put_object(Bucket=s3_bucket, Key=source_key, Body=content)
+
+        # Set up the multi-part upload.
+        multi_part_upload_key = "destination_file.txt"
+        create_multipart_upload = aws_client.s3.create_multipart_upload(
+            Bucket=s3_bucket, Key=multi_part_upload_key
+        )
+        upload_id = create_multipart_upload["UploadId"]
+
+        # Uploading shouldn't raise an exception
+        later_datetime = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=1)
+        upload_part_copy = aws_client.s3.upload_part_copy(
+            Bucket=s3_bucket,
+            UploadId=upload_id,
+            Key=multi_part_upload_key,
+            PartNumber=1,
+            CopySource=f"{s3_bucket}/{source_key}",
+            CopySourceIfUnmodifiedSince=later_datetime,
+        )
+        snapshot.match("upload-part-copy-if-unmodified-since", upload_part_copy)
+
+        # Check parts were uploaded successfully
+        list_parts = aws_client.s3.list_parts(
+            Bucket=s3_bucket, Key=multi_part_upload_key, UploadId=upload_id
+        )
+        snapshot.match("list-parts", list_parts)
+
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        paths=["$..Owner.DisplayName"],
+    )
+    def test_upload_part_copy_with_copy_source_if_modified_since_success(
+        self, aws_client, s3_bucket, snapshot
+    ):
+        snapshot.add_transformer(
+            [
+                snapshot.transform.key_value("Bucket", reference_replacement=False),
+                snapshot.transform.key_value("Location"),
+                snapshot.transform.key_value("UploadId"),
+                snapshot.transform.key_value("DisplayName", reference_replacement=False),
+                snapshot.transform.key_value("ID", reference_replacement=False),
+                snapshot.transform.key_value("ETag"),
+            ]
+        )
+
+        # Set up the source object.
+        source_key = "source_file.txt"
+        content = "0123456789"
+        aws_client.s3.put_object(Bucket=s3_bucket, Key=source_key, Body=content)
+
+        # Set up the multi-part upload.
+        multi_part_upload_key = "destination_file.txt"
+        create_multipart_upload = aws_client.s3.create_multipart_upload(
+            Bucket=s3_bucket, Key=multi_part_upload_key
+        )
+        upload_id = create_multipart_upload["UploadId"]
+
+        # Uploading shouldn't raise an exception
+        earlier_datetime = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=1)
+        upload_part_copy = aws_client.s3.upload_part_copy(
+            Bucket=s3_bucket,
+            UploadId=upload_id,
+            Key=multi_part_upload_key,
+            PartNumber=1,
+            CopySource=f"{s3_bucket}/{source_key}",
+            CopySourceIfModifiedSince=earlier_datetime,
+        )
+        snapshot.match("upload-part-copy-if-modified-since", upload_part_copy)
+
+        # Check parts were uploaded successfully
+        list_parts = aws_client.s3.list_parts(
+            Bucket=s3_bucket, Key=multi_part_upload_key, UploadId=upload_id
+        )
+        snapshot.match("list-parts", list_parts)
+
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        paths=["$..Owner.DisplayName"],
+    )
+    def test_upload_part_copy_with_copy_source_if_modified_since_in_future_success(
+        self, aws_client, s3_bucket, snapshot
+    ):
+        """
+        Providing CopyIfModifiedSince with a datetime which is in the future will always pass (even though it evaluates to false). This is AWS defined behaviour.
+        """
+        snapshot.add_transformer(
+            [
+                snapshot.transform.key_value("Bucket", reference_replacement=False),
+                snapshot.transform.key_value("Location"),
+                snapshot.transform.key_value("UploadId"),
+                snapshot.transform.key_value("DisplayName", reference_replacement=False),
+                snapshot.transform.key_value("ID", reference_replacement=False),
+                snapshot.transform.key_value("ETag"),
+            ]
+        )
+
+        # Set up the source object.
+        source_key = "source_file.txt"
+        content = "0123456789"
+        aws_client.s3.put_object(Bucket=s3_bucket, Key=source_key, Body=content)
+
+        # Set up the multi-part upload.
+        multi_part_upload_key = "destination_file.txt"
+        create_multipart_upload = aws_client.s3.create_multipart_upload(
+            Bucket=s3_bucket, Key=multi_part_upload_key
+        )
+        upload_id = create_multipart_upload["UploadId"]
+
+        # Uploading shouldn't raise an exception
+        later_datetime = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=1)
+        upload_part_copy = aws_client.s3.upload_part_copy(
+            Bucket=s3_bucket,
+            UploadId=upload_id,
+            Key=multi_part_upload_key,
+            PartNumber=1,
+            CopySource=f"{s3_bucket}/{source_key}",
+            CopySourceIfModifiedSince=later_datetime,
+        )
+        snapshot.match("upload-part-copy-if-modified-since-in-future", upload_part_copy)
+
+        # Check parts were uploaded successfully
+        list_parts = aws_client.s3.list_parts(
+            Bucket=s3_bucket, Key=multi_part_upload_key, UploadId=upload_id
+        )
+        snapshot.match("list-parts", list_parts)
+
+    @markers.aws.validated
+    def test_upload_part_copy_with_copy_source_if_match_failed(
+        self, aws_client, s3_bucket, snapshot
+    ):
+        """
+        Providing CopySourceIfMatch with an ETag which doesn't match with the specified source key ETag should fail.
+        """
+        snapshot.add_transformer(
+            [
+                snapshot.transform.key_value("Bucket", reference_replacement=False),
+                snapshot.transform.key_value("Location"),
+                snapshot.transform.key_value("UploadId"),
+                snapshot.transform.key_value("DisplayName", reference_replacement=False),
+                snapshot.transform.key_value("ID", reference_replacement=False),
+                snapshot.transform.key_value("ETag"),
+            ]
+        )
+
+        # Set up the source object.
+        source_key = "source_file.txt"
+        content = "0123456789"
+        aws_client.s3.put_object(Bucket=s3_bucket, Key=source_key, Body=content)
+
+        # Set up the multi-part upload.
+        multi_part_upload_key = "destination_file.txt"
+        create_multipart_upload = aws_client.s3.create_multipart_upload(
+            Bucket=s3_bucket, Key=multi_part_upload_key
+        )
+        upload_id = create_multipart_upload["UploadId"]
+
+        with pytest.raises(ClientError) as error:
+            aws_client.s3.upload_part_copy(
+                Bucket=s3_bucket,
+                UploadId=upload_id,
+                Key=multi_part_upload_key,
+                PartNumber=1,
+                CopySource=f"{s3_bucket}/{source_key}",
+                CopySourceIfMatch="not-matching",
+            )
+        snapshot.match("upload-part-copy-source-if-match", error.value.response)
+
+    @markers.aws.validated
+    def test_upload_part_copy_with_copy_source_if_none_match_failed(
+        self, aws_client, s3_bucket, snapshot
+    ):
+        """
+        Providing CopySourceIfNoneMatch with an ETag which does match with the specified source key ETag should fail.
+        """
+        snapshot.add_transformer(
+            [
+                snapshot.transform.key_value("Bucket", reference_replacement=False),
+                snapshot.transform.key_value("Location"),
+                snapshot.transform.key_value("UploadId"),
+                snapshot.transform.key_value("DisplayName", reference_replacement=False),
+                snapshot.transform.key_value("ID", reference_replacement=False),
+                snapshot.transform.key_value("ETag"),
+            ]
+        )
+
+        # Set up the source object.
+        source_key = "source_file.txt"
+        content = "0123456789"
+        put_source_object = aws_client.s3.put_object(Bucket=s3_bucket, Key=source_key, Body=content)
+
+        # Set up the multi-part upload.
+        multi_part_upload_key = "destination_file.txt"
+        create_multipart_upload = aws_client.s3.create_multipart_upload(
+            Bucket=s3_bucket, Key=multi_part_upload_key
+        )
+        upload_id = create_multipart_upload["UploadId"]
+
+        with pytest.raises(ClientError) as error:
+            # Provide the correct ETag to cause a failure
+            aws_client.s3.upload_part_copy(
+                Bucket=s3_bucket,
+                UploadId=upload_id,
+                Key=multi_part_upload_key,
+                PartNumber=1,
+                CopySource=f"{s3_bucket}/{source_key}",
+                CopySourceIfNoneMatch=put_source_object["ETag"],
+            )
+        snapshot.match("upload-part-copy-source-if-none-match", error.value.response)
+
+    @markers.aws.validated
+    def test_upload_part_copy_with_copy_source_if_unmodified_since_match_failed(
+        self, aws_client, s3_bucket, snapshot
+    ):
+        """
+        Providing CopySourceIfUnmodifiedSince with a datetime where the object has been modified since this datetime should fail.
+        """
+        snapshot.add_transformer(
+            [
+                snapshot.transform.key_value("Bucket", reference_replacement=False),
+                snapshot.transform.key_value("Location"),
+                snapshot.transform.key_value("UploadId"),
+                snapshot.transform.key_value("DisplayName", reference_replacement=False),
+                snapshot.transform.key_value("ID", reference_replacement=False),
+                snapshot.transform.key_value("ETag"),
+            ]
+        )
+
+        # Set up the source object.
+        source_key = "source_file.txt"
+        content = "0123456789"
+        aws_client.s3.put_object(Bucket=s3_bucket, Key=source_key, Body=content)
+
+        # Set up the multi-part upload.
+        multi_part_upload_key = "destination_file.txt"
+        create_multipart_upload = aws_client.s3.create_multipart_upload(
+            Bucket=s3_bucket, Key=multi_part_upload_key
+        )
+        upload_id = create_multipart_upload["UploadId"]
+
+        earlier_datetime = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=1)
+        with pytest.raises(ClientError) as error:
+            # Provide a time earler than it's last modified time which should fail.
+            aws_client.s3.upload_part_copy(
+                Bucket=s3_bucket,
+                UploadId=upload_id,
+                Key=multi_part_upload_key,
+                PartNumber=1,
+                CopySource=f"{s3_bucket}/{source_key}",
+                CopySourceIfUnmodifiedSince=earlier_datetime,
+            )
+        snapshot.match("upload-part-copy-source-unmodified-since-match", error.value.response)
+
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        paths=["$..Owner.DisplayName"],
+    )
+    def test_upload_part_copy_with_copy_source_if_match_and_if_unmodified_since_match(
+        self, aws_client, s3_bucket, snapshot
+    ):
+        """
+        If CopySourceIfMatch is provided with CopySourceIfUnmodifiedSince it should proceed even if the latter evaluates to false.
+        See documentation: https://docs.aws.amazon.com/AmazonS3/latest/API/API_UploadPartCopy.html
+        """
+        snapshot.add_transformer(
+            [
+                snapshot.transform.key_value("Bucket", reference_replacement=False),
+                snapshot.transform.key_value("Location"),
+                snapshot.transform.key_value("UploadId"),
+                snapshot.transform.key_value("DisplayName", reference_replacement=False),
+                snapshot.transform.key_value("ID", reference_replacement=False),
+                snapshot.transform.key_value("ETag"),
+            ]
+        )
+
+        # Set up the source object.
+        source_key = "source_file.txt"
+        content = "0123456789"
+        put_source_object = aws_client.s3.put_object(Bucket=s3_bucket, Key=source_key, Body=content)
+
+        # Set up the multi-part upload.
+        multi_part_upload_key = "destination_file.txt"
+        create_multipart_upload = aws_client.s3.create_multipart_upload(
+            Bucket=s3_bucket, Key=multi_part_upload_key
+        )
+        upload_id = create_multipart_upload["UploadId"]
+
+        # Uploading shouldn't raise an exception
+        earlier_datetime = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=1)
+        upload_part_copy = aws_client.s3.upload_part_copy(
+            Bucket=s3_bucket,
+            UploadId=upload_id,
+            Key=multi_part_upload_key,
+            PartNumber=1,
+            CopySource=f"{s3_bucket}/{source_key}",
+            CopySourceIfMatch=put_source_object["ETag"],
+            CopySourceIfUnmodifiedSince=earlier_datetime,
+        )
+        snapshot.match("upload-part-copy", upload_part_copy)
+
+        # Check parts were uploaded successfully
+        list_parts = aws_client.s3.list_parts(
+            Bucket=s3_bucket, Key=multi_part_upload_key, UploadId=upload_id
+        )
+        snapshot.match("list-parts", list_parts)
+
+    @markers.aws.validated
+    def test_upload_part_copy_with_copy_source_if_none_match_and_if_unmodified_since_match_failed(
+        self, aws_client, s3_bucket, snapshot
+    ):
+        """
+        If CopySourceIfNoneMatch evaluates to true, we should fail if CopySourceIfUnmodifiedSince evaluates to false.
+        """
+        snapshot.add_transformer(
+            [
+                snapshot.transform.key_value("Bucket", reference_replacement=False),
+                snapshot.transform.key_value("Location"),
+                snapshot.transform.key_value("UploadId"),
+                snapshot.transform.key_value("DisplayName", reference_replacement=False),
+                snapshot.transform.key_value("ID", reference_replacement=False),
+                snapshot.transform.key_value("ETag"),
+            ]
+        )
+
+        # Set up the source object.
+        source_key = "source_file.txt"
+        content = "0123456789"
+        aws_client.s3.put_object(Bucket=s3_bucket, Key=source_key, Body=content)
+
+        # Set up the multi-part upload.
+        multi_part_upload_key = "destination_file.txt"
+        create_multipart_upload = aws_client.s3.create_multipart_upload(
+            Bucket=s3_bucket, Key=multi_part_upload_key
+        )
+        upload_id = create_multipart_upload["UploadId"]
+
+        earlier_datetime = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=1)
+        with pytest.raises(ClientError) as error:
+            aws_client.s3.upload_part_copy(
+                Bucket=s3_bucket,
+                UploadId=upload_id,
+                Key=multi_part_upload_key,
+                PartNumber=1,
+                CopySource=f"{s3_bucket}/{source_key}",
+                CopySourceIfNoneMatch="not-matching",
+                CopySourceIfUnmodifiedSince=earlier_datetime,
+            )
+        snapshot.match(
+            "upload-part-copy-source-unmodified-since-and-if-none-match", error.value.response
+        )
+
+    @markers.aws.validated
+    def test_upload_part_copy_with_if_modified_since_failed(self, aws_client, s3_bucket, snapshot):
+        snapshot.add_transformer(
+            [
+                snapshot.transform.key_value("Bucket", reference_replacement=False),
+                snapshot.transform.key_value("Location"),
+                snapshot.transform.key_value("UploadId"),
+                snapshot.transform.key_value("DisplayName", reference_replacement=False),
+                snapshot.transform.key_value("ID", reference_replacement=False),
+                snapshot.transform.key_value("ETag"),
+            ]
+        )
+
+        # Set up the source object.
+        source_key = "source_file.txt"
+        content = "0123456789"
+        aws_client.s3.put_object(Bucket=s3_bucket, Key=source_key, Body=content)
+
+        # Set up the multi-part upload.
+        multi_part_upload_key = "destination_file.txt"
+        create_multipart_upload = aws_client.s3.create_multipart_upload(
+            Bucket=s3_bucket, Key=multi_part_upload_key
+        )
+        upload_id = create_multipart_upload["UploadId"]
+
+        # Don't do this, but required for behaviour with CopySourceIfModifiedSince which will pass if a future time is provided.
+        sleep(1)
+
+        with pytest.raises(ClientError) as error:
+            aws_client.s3.upload_part_copy(
+                Bucket=s3_bucket,
+                UploadId=upload_id,
+                Key=multi_part_upload_key,
+                PartNumber=1,
+                CopySource=f"{s3_bucket}/{source_key}",
+                CopySourceIfModifiedSince=datetime.datetime.now(tz=datetime.UTC),
+            )
+        snapshot.match("upload-part-copy-source-modified-since-match", error.value.response)
 
 
 class TestS3BucketVersioning:
@@ -864,6 +1369,7 @@ class TestS3BucketEncryption:
         ]
     )
     def test_s3_bucket_encryption_sse_kms_aws_managed_key(self, s3_bucket, aws_client, snapshot):
+        snapshot.add_transformer(snapshot.transform.key_value("CurrentKeyMaterialId"))
         # if you don't provide a KMS key, AWS will use an AWS managed one.
         put_bucket_enc = aws_client.s3.put_bucket_encryption(
             Bucket=s3_bucket,
@@ -945,6 +1451,128 @@ class TestS3BucketObjectTagging:
         e.match("NoSuchTagSet")
 
     @markers.aws.validated
+    def test_create_bucket_with_tags(
+        self, s3_create_bucket_with_client, region_name, aws_client, snapshot
+    ):
+        snapshot.add_transformers_list(
+            [
+                snapshot.transform.key_value("BucketName"),
+                snapshot.transform.key_value("Location"),
+            ]
+        )
+        additional_config = {}
+        if region_name != US_EAST_1_REGION:
+            additional_config["LocationConstraint"] = region_name
+
+        bucket_name = f"test-bucket-tag-{short_uid()}"
+        create_bucket = s3_create_bucket_with_client(
+            aws_client.s3,
+            Bucket=bucket_name,
+            CreateBucketConfiguration={
+                "Tags": [{"Key": "tag1", "Value": "value1"}],
+                **additional_config,
+            },
+        )
+        snapshot.match("create-bucket-with-tags", create_bucket)
+
+        get_bucket_tags = aws_client.s3.get_bucket_tagging(Bucket=bucket_name)
+        snapshot.match("get-bucket-tags", get_bucket_tags)
+
+    @markers.aws.validated
+    def test_create_bucket_with_empty_tags(
+        self, s3_create_bucket_with_client, aws_client_factory, snapshot
+    ):
+        snapshot.add_transformers_list(
+            [
+                snapshot.transform.key_value("BucketName"),
+                snapshot.transform.key_value("Location"),
+            ]
+        )
+
+        s3_client = aws_client_factory(
+            region_name=US_EAST_1_REGION, config=Config(parameter_validation=False)
+        ).s3
+
+        bucket_name = f"test-bucket-tag-{short_uid()}"
+        create_bucket = s3_create_bucket_with_client(
+            s3_client,
+            Bucket=bucket_name,
+            CreateBucketConfiguration={"Tags": []},
+        )
+        snapshot.match("create-bucket-with-empty-tags", create_bucket)
+
+        with pytest.raises(ClientError) as e:
+            s3_client.get_bucket_tagging(Bucket=bucket_name)
+        snapshot.match("get-bucket-tags", e.value.response)
+
+        create_bucket_none = s3_create_bucket_with_client(
+            s3_client,
+            Bucket=bucket_name,
+            CreateBucketConfiguration={"Tags": None},
+        )
+        snapshot.match("create-bucket-with-none-tags", create_bucket_none)
+
+    @markers.aws.validated
+    def test_create_bucket_with_tags_us_east_1_idempotency(
+        self, s3_create_bucket_with_client, aws_client_factory, snapshot
+    ):
+        snapshot.add_transformers_list(
+            [
+                snapshot.transform.key_value("BucketName"),
+                snapshot.transform.key_value("Location"),
+            ]
+        )
+        us_east_1_s3_client = aws_client_factory(
+            region_name=US_EAST_1_REGION, config=Config(parameter_validation=False)
+        ).s3
+
+        bucket_name = f"test-bucket-tag-{short_uid()}"
+        create_bucket = s3_create_bucket_with_client(
+            us_east_1_s3_client,
+            Bucket=bucket_name,
+            CreateBucketConfiguration={"Tags": [{"Key": "tag1", "Value": "value1"}]},
+        )
+        snapshot.match("create-bucket-with-tags", create_bucket)
+
+        get_bucket_tags = us_east_1_s3_client.get_bucket_tagging(Bucket=bucket_name)
+        snapshot.match("get-bucket-tags", get_bucket_tags)
+
+        with pytest.raises(ClientError) as e:
+            s3_create_bucket_with_client(
+                us_east_1_s3_client,
+                Bucket=bucket_name,
+                CreateBucketConfiguration={"Tags": [{"Key": "tag2", "Value": "value2"}]},
+            )
+        snapshot.match("create-bucket-different-tags", e.value.response)
+
+        create_bucket = s3_create_bucket_with_client(
+            us_east_1_s3_client,
+            Bucket=bucket_name,
+        )
+        snapshot.match("create-bucket-with-no-tags", create_bucket)
+
+        get_bucket_tags = us_east_1_s3_client.get_bucket_tagging(Bucket=bucket_name)
+        snapshot.match("get-bucket-tags-after-re-create", get_bucket_tags)
+
+        with pytest.raises(ClientError) as e:
+            s3_create_bucket_with_client(
+                us_east_1_s3_client,
+                Bucket=bucket_name,
+                CreateBucketConfiguration={"Tags": [{"Key": "tag1", "Value": "value1"}]},
+            )
+        snapshot.match("create-bucket-with-same-tags", e.value.response)
+
+        create_bucket_empty_tags = s3_create_bucket_with_client(
+            us_east_1_s3_client,
+            Bucket=bucket_name,
+            CreateBucketConfiguration={"Tags": []},
+        )
+        snapshot.match("create-bucket-with-empty-tags", create_bucket_empty_tags)
+
+        get_bucket_tags = us_east_1_s3_client.get_bucket_tagging(Bucket=bucket_name)
+        snapshot.match("get-bucket-tags-after-create-empty", get_bucket_tags)
+
+    @markers.aws.validated
     def test_bucket_tagging_exc(self, s3_bucket, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.key_value("BucketName"))
         fake_bucket = f"fake-bucket-{short_uid()}-{short_uid()}"
@@ -959,6 +1587,102 @@ class TestS3BucketObjectTagging:
         with pytest.raises(ClientError) as e:
             aws_client.s3.put_bucket_tagging(Bucket=fake_bucket, Tagging={"TagSet": []})
         snapshot.match("put-no-bucket-tags", e.value.response)
+
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        paths=[
+            # FIXME: regenerate snapshot when AWS is not raising a 500 error anymore
+            "$.tags-key-aws-duplicated-key.*"
+        ]
+    )
+    def test_create_bucket_with_tags_exc(
+        self, s3_create_bucket_with_client, aws_client_factory, snapshot
+    ):
+        snapshot.add_transformers_list(
+            [
+                snapshot.transform.key_value("BucketName"),
+                snapshot.transform.key_value("Location"),
+            ]
+        )
+        s3_client = aws_client_factory(
+            region_name=US_EAST_1_REGION, config=Config(parameter_validation=False)
+        ).s3
+
+        bucket_name = f"test-bucket-tag-{short_uid()}"
+
+        with pytest.raises(ClientError) as e:
+            s3_create_bucket_with_client(
+                s3_client,
+                Bucket=bucket_name,
+                CreateBucketConfiguration={"Tags": [{"Key": None, "Value": "value1"}]},
+            )
+        snapshot.match("tags-key-none", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            s3_create_bucket_with_client(
+                s3_client,
+                Bucket=bucket_name,
+                CreateBucketConfiguration={"Tags": [{"Key": "key1", "Value": None}]},
+            )
+        snapshot.match("tags-value-none", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            s3_create_bucket_with_client(
+                s3_client,
+                Bucket=bucket_name,
+                CreateBucketConfiguration={"Tags": [{"Key": "aws:test", "Value": "value1"}]},
+            )
+        snapshot.match("tags-key-aws-prefix", e.value.response)
+
+        # FIXME: re-generate the snapshot later, AWS is returning a 500 error as of now (27 Nov 2025)
+        with pytest.raises(ClientError) as e:
+            s3_create_bucket_with_client(
+                s3_client,
+                Bucket=bucket_name,
+                CreateBucketConfiguration={
+                    "Tags": [
+                        {"Key": "key1", "Value": "value1"},
+                        {"Key": "key1", "Value": "value1"},
+                    ]
+                },
+            )
+        snapshot.match("tags-key-aws-duplicated-key", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            s3_create_bucket_with_client(
+                s3_client,
+                Bucket=bucket_name,
+                CreateBucketConfiguration={"Tags": [{"Key": "test", "Value": "value1,value2"}]},
+            )
+        snapshot.match("tags-key-aws-bad-value", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            s3_create_bucket_with_client(
+                s3_client,
+                Bucket=bucket_name,
+                CreateBucketConfiguration={"Tags": [{"Key": "test,test2", "Value": "value1"}]},
+            )
+        snapshot.match("tags-key-aws-bad-key", e.value.response)
+
+    @markers.aws.validated
+    def test_put_bucket_tagging_none_value(
+        self, s3_bucket, aws_client_factory, snapshot, region_name
+    ):
+        snapshot.add_transformer(snapshot.transform.key_value("BucketName"))
+        s3_client = aws_client_factory(
+            region_name=region_name, config=Config(parameter_validation=False)
+        ).s3
+        tag_set_origin = {"TagSet": [{"Key": "tag3", "Value": "tag3"}]}
+
+        put_bucket_tags = s3_client.put_bucket_tagging(Bucket=s3_bucket, Tagging=tag_set_origin)
+        snapshot.match("put-bucket-tags-origin", put_bucket_tags)
+
+        put_obj_tagging = s3_client.put_bucket_tagging(Bucket=s3_bucket, Tagging={"TagSet": None})
+        snapshot.match("put-none-tag-set", put_obj_tagging)
+
+        with pytest.raises(ClientError) as e:
+            s3_client.get_bucket_tagging(Bucket=s3_bucket)
+        snapshot.match("no-such-tag-set", e.value.response)
 
     @markers.aws.validated
     def test_object_tagging_crud(self, s3_bucket, aws_client, snapshot):
@@ -1044,6 +1768,24 @@ class TestS3BucketObjectTagging:
         snapshot.match("put-obj-wrong-format", e.value.response)
 
     @markers.aws.validated
+    def test_put_object_tagging_none_value(
+        self, s3_bucket, aws_client_factory, snapshot, region_name
+    ):
+        s3_client = aws_client_factory(
+            region_name=region_name, config=Config(parameter_validation=False)
+        ).s3
+        object_key = "test-empty-tag-set"
+        s3_client.put_object(Bucket=s3_bucket, Key=object_key, Body="test-tagging")
+
+        put_obj_tagging = s3_client.put_object_tagging(
+            Bucket=s3_bucket, Key=object_key, Tagging={"TagSet": None}
+        )
+        snapshot.match("put-none-tag-set", put_obj_tagging)
+
+        get_object_tags = s3_client.get_object_tagging(Bucket=s3_bucket, Key=object_key)
+        snapshot.match("get-object-tags-none", get_object_tags)
+
+    @markers.aws.validated
     def test_object_tagging_versioned(self, s3_bucket, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.key_value("VersionId"))
         aws_client.s3.put_bucket_versioning(
@@ -1069,32 +1811,44 @@ class TestS3BucketObjectTagging:
         tag_set_2 = {"TagSet": [{"Key": "tag3", "Value": "tag3"}]}
 
         # test without specifying a VersionId
-        put_bucket_tags = aws_client.s3.put_object_tagging(
+        put_object_tags = aws_client.s3.put_object_tagging(
             Bucket=s3_bucket, Key=object_key, Tagging=tag_set_2
         )
-        snapshot.match("put-object-tags-current-version", put_bucket_tags)
-        assert put_bucket_tags["VersionId"] == version_id_2
+        snapshot.match("put-object-tags-current-version", put_object_tags)
+        assert put_object_tags["VersionId"] == version_id_2
 
-        get_bucket_tags = aws_client.s3.get_object_tagging(Bucket=s3_bucket, Key=object_key)
-        snapshot.match("get-object-tags-current-version", get_bucket_tags)
+        put_object_tags = aws_client.s3.get_object_tagging(Bucket=s3_bucket, Key=object_key)
+        snapshot.match("get-object-tags-current-version", put_object_tags)
 
-        get_bucket_tags = aws_client.s3.get_object_tagging(
+        put_object_tags = aws_client.s3.get_object_tagging(
             Bucket=s3_bucket, Key=object_key, VersionId=version_id_1
         )
-        snapshot.match("get-object-tags-previous-version", get_bucket_tags)
+        snapshot.match("get-object-tags-previous-version", put_object_tags)
 
         tag_set_2 = {"TagSet": [{"Key": "tag1", "Value": "tag1"}]}
         # test by specifying a VersionId to Version1
-        put_bucket_tags = aws_client.s3.put_object_tagging(
+        put_object_tags = aws_client.s3.put_object_tagging(
             Bucket=s3_bucket, Key=object_key, VersionId=version_id_1, Tagging=tag_set_2
         )
-        snapshot.match("put-object-tags-previous-version", put_bucket_tags)
-        assert put_bucket_tags["VersionId"] == version_id_1
+        snapshot.match("put-object-tags-previous-version", put_object_tags)
+        assert put_object_tags["VersionId"] == version_id_1
 
-        get_bucket_tags = aws_client.s3.get_object_tagging(
+        get_object_tags = aws_client.s3.get_object_tagging(
             Bucket=s3_bucket, Key=object_key, VersionId=version_id_1
         )
-        snapshot.match("get-object-tags-previous-version-again", get_bucket_tags)
+        snapshot.match("get-object-tags-previous-version-again", get_object_tags)
+
+        # delete tagging on current object
+        aws_client.s3.delete_object_tagging(Bucket=s3_bucket, Key=object_key)
+        get_object_tags = aws_client.s3.get_object_tagging(Bucket=s3_bucket, Key=object_key)
+        snapshot.match("get-object-tags-deleted-current", get_object_tags)
+
+        # delete object tagging on previous version too
+        aws_client.s3.delete_object_tagging(
+            Bucket=s3_bucket, Key=object_key, VersionId=version_id_1
+        )
+        get_object_tags = aws_client.s3.get_object_tagging(Bucket=s3_bucket, Key=object_key)
+        snapshot.match("get-object-tags-previous-version-deleted", get_object_tags)
 
         # Put a DeleteMarker on top of the stack
         delete_current = aws_client.s3.delete_object(Bucket=s3_bucket, Key=object_key)
@@ -1187,6 +1941,44 @@ class TestS3BucketObjectTagging:
         snapshot.match("get-object-tags-wrong-format-qs-2", get_object_tags)
 
     @markers.aws.validated
+    def test_head_object_with_tags(self, s3_bucket, aws_client, snapshot):
+        object_key = "test-put-object-tagging"
+        # tagging must be a URL encoded string directly
+        tag_set = "tag1=tag1&tag2=tag2&tag="
+        put_object = aws_client.s3.put_object(
+            Bucket=s3_bucket, Key=object_key, Body="test-tagging", Tagging=tag_set
+        )
+        snapshot.match("put-object", put_object)
+
+        head_object = aws_client.s3.head_object(Bucket=s3_bucket, Key=object_key)
+        snapshot.match("head-obj-after-create", head_object)
+
+        tag_set_2 = {"TagSet": [{"Key": "tag3", "Value": "tag3"}]}
+        put_bucket_tags = aws_client.s3.put_object_tagging(
+            Bucket=s3_bucket, Key=object_key, Tagging=tag_set_2
+        )
+        snapshot.match("put-object-tags", put_bucket_tags)
+
+        head_object = aws_client.s3.head_object(Bucket=s3_bucket, Key=object_key)
+        snapshot.match("head-obj-after-tagging", head_object)
+
+        tag_set_2 = {
+            "TagSet": [
+                {"Key": "tag3", "Value": "tag3"},
+                {"Key": "tag4", "Value": "tag4"},
+                {"Key": "tag5", "Value": "tag5"},
+            ]
+        }
+        aws_client.s3.put_object_tagging(Bucket=s3_bucket, Key=object_key, Tagging=tag_set_2)
+        head_object = aws_client.s3.head_object(Bucket=s3_bucket, Key=object_key)
+        snapshot.match("head-obj-after-overwrite", head_object)
+
+        aws_client.s3.put_object_tagging(Bucket=s3_bucket, Key=object_key, Tagging={"TagSet": []})
+
+        head_object = aws_client.s3.head_object(Bucket=s3_bucket, Key=object_key)
+        snapshot.match("head-obj-after-removal", head_object)
+
+    @markers.aws.validated
     def test_object_tags_delete_or_overwrite_object(self, s3_bucket, aws_client, snapshot):
         # verify that tags aren't kept after object deletion
         object_key = "test-put-object-tagging-kept"
@@ -1213,12 +2005,17 @@ class TestS3BucketObjectTagging:
         snapshot.match("get-object-after-recreation", get_bucket_tags)
 
     @markers.aws.validated
-    def test_tagging_validation(self, s3_bucket, aws_client, snapshot):
+    def test_tagging_validation(
+        self, s3_bucket, aws_client, aws_client_factory, region_name, snapshot
+    ):
         object_key = "tagging-validation"
         aws_client.s3.put_object(Bucket=s3_bucket, Key=object_key, Body=b"")
+        s3_client = aws_client_factory(
+            region_name=region_name, config=Config(parameter_validation=False)
+        ).s3
 
         with pytest.raises(ClientError) as e:
-            aws_client.s3.put_bucket_tagging(
+            s3_client.put_bucket_tagging(
                 Bucket=s3_bucket,
                 Tagging={
                     "TagSet": [
@@ -1230,7 +2027,7 @@ class TestS3BucketObjectTagging:
         snapshot.match("put-bucket-tags-duplicate-keys", e.value.response)
 
         with pytest.raises(ClientError) as e:
-            aws_client.s3.put_bucket_tagging(
+            s3_client.put_bucket_tagging(
                 Bucket=s3_bucket,
                 Tagging={
                     "TagSet": [
@@ -1241,7 +2038,18 @@ class TestS3BucketObjectTagging:
         snapshot.match("put-bucket-tags-invalid-key", e.value.response)
 
         with pytest.raises(ClientError) as e:
-            aws_client.s3.put_bucket_tagging(
+            s3_client.put_bucket_tagging(
+                Bucket=s3_bucket,
+                Tagging={
+                    "TagSet": [
+                        {"Key": None, "Value": "Val1"},
+                    ]
+                },
+            )
+        snapshot.match("put-bucket-tags-none-key", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            s3_client.put_bucket_tagging(
                 Bucket=s3_bucket,
                 Tagging={
                     "TagSet": [
@@ -1252,7 +2060,18 @@ class TestS3BucketObjectTagging:
         snapshot.match("put-bucket-tags-invalid-value", e.value.response)
 
         with pytest.raises(ClientError) as e:
-            aws_client.s3.put_bucket_tagging(
+            s3_client.put_bucket_tagging(
+                Bucket=s3_bucket,
+                Tagging={
+                    "TagSet": [
+                        {"Key": "key1", "Value": None},
+                    ]
+                },
+            )
+        snapshot.match("put-bucket-tags-none-value", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            s3_client.put_bucket_tagging(
                 Bucket=s3_bucket,
                 Tagging={
                     "TagSet": [
@@ -1263,7 +2082,7 @@ class TestS3BucketObjectTagging:
         snapshot.match("put-bucket-tags-aws-prefixed", e.value.response)
 
         with pytest.raises(ClientError) as e:
-            aws_client.s3.put_object_tagging(
+            s3_client.put_object_tagging(
                 Bucket=s3_bucket,
                 Key=object_key,
                 Tagging={
@@ -1277,7 +2096,7 @@ class TestS3BucketObjectTagging:
         snapshot.match("put-object-tags-duplicate-keys", e.value.response)
 
         with pytest.raises(ClientError) as e:
-            aws_client.s3.put_object_tagging(
+            s3_client.put_object_tagging(
                 Bucket=s3_bucket,
                 Key=object_key,
                 Tagging={"TagSet": [{"Key": "Key1,Key2", "Value": "Val1"}]},
@@ -1286,12 +2105,28 @@ class TestS3BucketObjectTagging:
         snapshot.match("put-object-tags-invalid-field", e.value.response)
 
         with pytest.raises(ClientError) as e:
-            aws_client.s3.put_object_tagging(
+            s3_client.put_object_tagging(
                 Bucket=s3_bucket,
                 Key=object_key,
                 Tagging={"TagSet": [{"Key": "aws:prefixed", "Value": "Val1"}]},
             )
         snapshot.match("put-object-tags-aws-prefixed", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            s3_client.put_object_tagging(
+                Bucket=s3_bucket,
+                Key=object_key,
+                Tagging={"TagSet": [{"Key": None, "Value": "Val1"}]},
+            )
+        snapshot.match("put-object-tags-none-key", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            s3_client.put_object_tagging(
+                Bucket=s3_bucket,
+                Key=object_key,
+                Tagging={"TagSet": [{"Key": "key1", "Value": None}]},
+            )
+        snapshot.match("put-object-tags-none-value", e.value.response)
 
 
 class TestS3ObjectLock:
@@ -2409,3 +3244,79 @@ class TestS3DeletePrecondition:
                 IfMatchLastModifiedTime=earlier,
             )
         snapshot.match("delete-obj-if-match-all", e.value.response)
+
+
+@pytest.mark.skipif(condition=TEST_S3_IMAGE, reason="SQS not enabled in S3 image")
+class TestS3BucketNotificationConfiguration:
+    @markers.aws.validated
+    def test_bucket_notification_with_missing_values_in_rule(
+        self,
+        s3_bucket,
+        sqs_create_queue,
+        snapshot,
+        aws_client,
+        aws_client_factory,
+        region_name,
+    ):
+        s3_client = aws_client_factory(
+            region_name=region_name, config=Config(parameter_validation=False)
+        ).s3
+        queue_url = sqs_create_queue()
+        queue_attributes = aws_client.sqs.get_queue_attributes(
+            QueueUrl=queue_url, AttributeNames=["QueueArn"]
+        )
+        filter_rule = {}
+        cfg = {
+            "QueueConfigurations": [
+                {
+                    "QueueArn": queue_attributes["Attributes"]["QueueArn"],
+                    "Events": ["s3:ObjectCreated:*"],
+                    "Filter": {"Key": {"FilterRules": [filter_rule]}},
+                }
+            ]
+        }
+        with pytest.raises(ClientError) as e:
+            s3_client.put_bucket_notification_configuration(
+                Bucket=s3_bucket, NotificationConfiguration=cfg
+            )
+        snapshot.match("invalid-rule-no-values", e.value.response)
+
+        filter_rule["Name"] = "prefix"
+        with pytest.raises(ClientError) as e:
+            s3_client.put_bucket_notification_configuration(
+                Bucket=s3_bucket, NotificationConfiguration=cfg
+            )
+        snapshot.match("invalid-rule-no-value", e.value.response)
+
+        filter_rule["Value"] = "test"
+        del filter_rule["Name"]
+        with pytest.raises(ClientError) as e:
+            s3_client.put_bucket_notification_configuration(
+                Bucket=s3_bucket, NotificationConfiguration=cfg
+            )
+        snapshot.match("invalid-rule-no-name", e.value.response)
+
+    @markers.aws.validated
+    def test_bucket_notification_with_invalid_filter_rules(
+        self, s3_bucket, sqs_create_queue, snapshot, aws_client
+    ):
+        queue_url = sqs_create_queue()
+        queue_attributes = aws_client.sqs.get_queue_attributes(
+            QueueUrl=queue_url, AttributeNames=["QueueArn"]
+        )
+        cfg = {
+            "QueueConfigurations": [
+                {
+                    "QueueArn": queue_attributes["Attributes"]["QueueArn"],
+                    "Events": ["s3:ObjectCreated:*"],
+                    "Filter": {
+                        "Key": {"FilterRules": [{"Name": "INVALID", "Value": "does not matter"}]}
+                    },
+                }
+            ]
+        }
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.put_bucket_notification_configuration(
+                Bucket=s3_bucket, NotificationConfiguration=cfg
+            )
+        snapshot.match("invalid_filter_name", e.value.response)

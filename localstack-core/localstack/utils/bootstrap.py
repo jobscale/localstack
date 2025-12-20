@@ -9,9 +9,9 @@ import shlex
 import signal
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from functools import wraps
-from typing import Any, Callable, Optional, Union
+from typing import Any
 
 from localstack import config, constants
 from localstack.config import (
@@ -34,8 +34,8 @@ from localstack.utils.container_utils.container_client import (
     NoSuchImage,
     NoSuchNetwork,
     PortMappings,
-    VolumeDirMount,
     VolumeMappings,
+    VolumeMappingSpecification,
 )
 from localstack.utils.container_utils.docker_cmd_client import CmdDockerClient
 from localstack.utils.docker_utils import DOCKER_CLIENT
@@ -175,7 +175,7 @@ def get_docker_image_details(image_name: str = None) -> dict[str, str]:
     return result
 
 
-def get_image_environment_variable(env_name: str) -> Optional[str]:
+def get_image_environment_variable(env_name: str) -> str | None:
     image_name = get_docker_image_to_start()
     image_info = DOCKER_CLIENT.inspect_image(image_name)
     image_envs = image_info["Config"]["Env"]
@@ -427,7 +427,7 @@ def validate_localstack_config(name: str):
 
     def port_exposed(port):
         for exposed in docker_ports:
-            if re.match(r"^([0-9]+-)?%s(-[0-9]+)?$" % port, exposed):
+            if re.match(rf"^([0-9]+-)?{port}(-[0-9]+)?$", exposed):
                 return True
 
     if not port_exposed(edge_port):
@@ -455,7 +455,7 @@ def get_docker_image_to_start():
 
 def extract_port_flags(user_flags, port_mappings: PortMappings):
     regex = r"-p\s+([0-9]+)(\-([0-9]+))?:([0-9]+)(\-([0-9]+))?"
-    matches = re.match(".*%s" % regex, user_flags)
+    matches = re.match(f".*{regex}", user_flags)
     if matches:
         for match in re.findall(regex, user_flags):
             start = int(match[0])
@@ -544,7 +544,7 @@ class ContainerConfigurators:
 
     @staticmethod
     def gateway_listen(
-        port: Union[int, Iterable[int], HostAndPort, Iterable[HostAndPort]],
+        port: int | Iterable[int] | HostAndPort | Iterable[HostAndPort],
     ):
         """
         Uses the given ports to configure GATEWAY_LISTEN. For instance, ``gateway_listen([4566, 443])`` would
@@ -666,7 +666,7 @@ class ContainerConfigurators:
         return _cfg
 
     @staticmethod
-    def volume(volume: BindMount | VolumeDirMount):
+    def volume(volume: VolumeMappingSpecification):
         def _cfg(cfg: ContainerConfiguration):
             cfg.volumes.add(volume)
 
@@ -1000,7 +1000,7 @@ class RunningContainer:
                     return
                 raise
 
-    def inspect(self) -> dict[str, Union[dict, str]]:
+    def inspect(self) -> dict[str, dict | str]:
         return self.container_client.inspect_container(container_name_or_id=self.id)
 
     def attach(self):
@@ -1028,7 +1028,7 @@ class ContainerLogPrinter:
         self.callback = callback
 
         self._closed = threading.Event()
-        self._stream: Optional[CancellableStream] = None
+        self._stream: CancellableStream | None = None
 
     def _can_start_streaming(self):
         if self._closed.is_set():
@@ -1114,8 +1114,8 @@ class LocalstackContainerServer(Server):
 
     def do_run(self):
         if self.is_container_running():
-            raise ContainerExists(
-                'LocalStack container named "%s" is already running' % self.container.name
+            raise ContainerRunning(
+                f'LocalStack container named "{self.container.name}" is already running'
             )
 
         config.dirs.mkdirs()
@@ -1151,12 +1151,19 @@ class ContainerExists(Exception):
     pass
 
 
+class ContainerRunning(Exception):
+    pass
+
+
 def prepare_docker_start():
     # prepare environment for docker start
     container_name = config.MAIN_CONTAINER_NAME
 
     if DOCKER_CLIENT.is_container_running(container_name):
-        raise ContainerExists('LocalStack container named "%s" is already running' % container_name)
+        raise ContainerRunning(f'LocalStack container named "{container_name}" is already running')
+
+    if container_name in DOCKER_CLIENT.get_all_container_names():
+        raise ContainerExists(f'LocalStack container named "{container_name}" already exists')
 
     config.dirs.mkdirs()
 
@@ -1308,7 +1315,8 @@ def start_infra_in_docker_detached(console, cli_params: dict[str, Any] = None):
     console.log("preparing environment")
     try:
         prepare_docker_start()
-    except ContainerExists as e:
+    except ContainerRunning as e:
+        # starting in detached mode is idempotent, return if container is already running
         console.print(str(e))
         return
 
@@ -1330,7 +1338,7 @@ def start_infra_in_docker_detached(console, cli_params: dict[str, Any] = None):
     console.log("detaching")
 
 
-def wait_container_is_ready(timeout: Optional[float] = None):
+def wait_container_is_ready(timeout: float | None = None):
     """Blocks until the localstack main container is running and the ready marker has been printed."""
     container_name = config.MAIN_CONTAINER_NAME
     started = time.time()

@@ -2,14 +2,14 @@ import os
 
 import pytest
 from localstack_snapshot.snapshots.transformer import RegexTransformer
-from tests.aws.services.cloudformation.conftest import skip_if_v1_provider
+from tests.aws.services.cloudformation.conftest import skip_if_legacy_engine
 
 from localstack.aws.api.lambda_ import Runtime
 from localstack.testing.pytest import markers
 from localstack.utils.strings import short_uid
 
 
-@skip_if_v1_provider("change sets")
+@skip_if_legacy_engine()
 @markers.snapshot.skip_snapshot_verify(
     paths=[
         "per-resource-events..*",
@@ -62,10 +62,7 @@ class TestChangeSetFnTransform:
         file = tmp_path / "bucket_definition.yml"
 
         if include_format == "json":
-            template = (
-                '{"Parameter": { "Type": "AWS::SSM::Parameter","Properties": {"Name": "%s", "Type": "String", "Value": "foo"}}}'
-                % name2
-            )
+            template = f'{{"Parameter": {{ "Type": "AWS::SSM::Parameter","Properties": {{"Name": "{name2}", "Type": "String", "Value": "foo"}}}}}}'
         else:
             template = f"""
             Parameter2:

@@ -7,7 +7,7 @@ from typing import Any, Final, TypedDict
 
 import boto3
 import jsonpath_ng
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ParamValidationError
 from samtranslator.translator.transform import transform as transform_sam
 
 from localstack.aws.connect import connect_to
@@ -28,6 +28,7 @@ from localstack.services.cloudformation.engine.v2.change_set_model import (
     NodeIntrinsicFunction,
     NodeIntrinsicFunctionFnTransform,
     NodeProperties,
+    NodeProperty,
     NodeResource,
     NodeResources,
     NodeTransform,
@@ -146,7 +147,7 @@ class ChangeSetModelTransform(ChangeSetModelPreproc):
         if not location or not location.startswith("s3://"):
             raise FailedTransformationException(
                 transformation=INCLUDE_TRANSFORM,
-                message="Unexpected Location parameter for AWS::Include transformer: %s" % location,
+                message=f"Unexpected Location parameter for AWS::Include transformer: {location}",
             )
 
         s3_client = connect_to(
@@ -158,7 +159,7 @@ class ChangeSetModelTransform(ChangeSetModelPreproc):
         except ClientError:
             raise FailedTransformationException(
                 transformation=INCLUDE_TRANSFORM,
-                message="Error downloading S3 object '%s/%s'" % (bucket, path),
+                message=f"Error downloading S3 object '{bucket}/{path}'",
             )
         try:
             template_to_include = parse_template(content)
@@ -500,7 +501,10 @@ class ChangeSetModelTransform(ChangeSetModelPreproc):
     def visit_node_intrinsic_function_fn_get_att(
         self, node_intrinsic_function: NodeIntrinsicFunction
     ) -> PreprocEntityDelta:
-        return self.visit(node_intrinsic_function.arguments)
+        try:
+            return super().visit_node_intrinsic_function_fn_get_att(node_intrinsic_function)
+        except RuntimeError:
+            return self.visit(node_intrinsic_function.arguments)
 
     def visit_node_intrinsic_function_fn_sub(
         self, node_intrinsic_function: NodeIntrinsicFunction
@@ -528,3 +532,16 @@ class ChangeSetModelTransform(ChangeSetModelPreproc):
             return super().visit_node_intrinsic_function_fn_select(node_intrinsic_function)
         except RuntimeError:
             return self.visit(node_intrinsic_function.arguments)
+
+    def visit_node_property(self, node_property: NodeProperty) -> PreprocEntityDelta:
+        try:
+            return super().visit_node_property(node_property)
+        except ParamValidationError:
+            return self.visit(node_property.value)
+
+    # ignore errors from dynamic replacements
+    def _maybe_perform_dynamic_replacements(self, delta: PreprocEntityDelta) -> PreprocEntityDelta:
+        try:
+            return super()._maybe_perform_dynamic_replacements(delta)
+        except Exception:
+            return delta

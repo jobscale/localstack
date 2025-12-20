@@ -45,6 +45,10 @@ PATTERN_KEY_ARN = re.compile(
     r"arn:(aws[a-zA-Z-]*)?:([a-zA-Z0-9-_.]+)?:([^:]+)?:(\d{12})?:key/[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}"
 )
 
+PATTERN_MRK_KEY_ARN = re.compile(
+    r"arn:(aws[a-zA-Z-]*)?:([a-zA-Z0-9-_.]+)?:([^:]+)?:(\d{12})?:key/mrk-[a-fA-F0-9]{32}"
+)
+
 
 # TODO: split into generic/aws and put into lib
 class TransformerUtility:
@@ -500,7 +504,7 @@ class TransformerUtility:
                 replacement="<stream-name>",
             ),
             TransformerUtility.key_value(
-                "ContinuationSequenceNumber", "<continuation_sequence_number>"
+                "ContinuationSequenceNumber", "continuation_sequence_number"
             ),
         ]
 
@@ -562,6 +566,8 @@ class TransformerUtility:
         """
         return [
             TransformerUtility.key_value("KeyId"),
+            TransformerUtility.key_value("KeyMaterialId"),
+            TransformerUtility.key_value("CurrentKeyMaterialId"),
             TransformerUtility.jsonpath(
                 jsonpath="$..Signature",
                 value_replacement="<signature>",
@@ -573,6 +579,7 @@ class TransformerUtility:
             TransformerUtility.key_value("CiphertextBlob", reference_replacement=False),
             TransformerUtility.key_value("Plaintext", reference_replacement=False),
             RegexTransformer(PATTERN_KEY_ARN, replacement="<key-arn>"),
+            RegexTransformer(PATTERN_MRK_KEY_ARN, replacement="<mrk-key-arn>"),
         ]
 
     @staticmethod
@@ -782,6 +789,11 @@ class TransformerUtility:
             JsonpathTransformer(
                 "$..x-amzn-RequestId",
                 "x-amzn-RequestId",
+                replace_reference=False,
+            ),
+            JsonpathTransformer(
+                "$..x-amzn-requestid",
+                "x-amzn-requestid",
                 replace_reference=False,
             ),
             KeyValueBasedTransformer(_transform_stepfunctions_cause_details, "json-input"),

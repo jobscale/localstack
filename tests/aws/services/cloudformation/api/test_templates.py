@@ -1,11 +1,14 @@
 import contextlib
+import json
 import os
 import textwrap
 
 import pytest
 from botocore.exceptions import ClientError
+from tests.aws.services.cloudformation.conftest import skip_if_legacy_engine
 
 from localstack.testing.pytest import markers
+from localstack.testing.pytest.fixtures import StackDeployError
 from localstack.utils.common import load_file
 from localstack.utils.strings import short_uid, to_bytes
 
@@ -29,6 +32,77 @@ def test_get_template_summary(deploy_cfn_template, snapshot, aws_client):
     res = aws_client.cloudformation.get_template_summary(StackName=deployment.stack_name)
 
     snapshot.match("template-summary", res)
+
+
+@markers.aws.validated
+@skip_if_legacy_engine()
+def test_get_template_summary_non_executed_change_set(aws_client, snapshot, cleanups):
+    snapshot.add_transformer(snapshot.transform.cloudformation_api())
+
+    template_body = {
+        "Resources": {
+            "MyParameter": {
+                "Type": "AWS::SSM::Parameter",
+                "Properties": {
+                    "Type": "String",
+                    "Value": short_uid(),
+                },
+            },
+        },
+    }
+    stack_name = f"stack-{short_uid()}"
+    change_set_name = f"change-set-{short_uid()}"
+    response = aws_client.cloudformation.create_change_set(
+        StackName=stack_name,
+        ChangeSetName=change_set_name,
+        TemplateBody=json.dumps(template_body),
+        ChangeSetType="CREATE",
+    )
+    aws_client.cloudformation.get_waiter("change_set_create_complete").wait(
+        ChangeSetName=response["Id"]
+    )
+    cleanups.append(lambda: aws_client.cloudformation.delete_stack(StackName=response["StackId"]))
+
+    with pytest.raises(ClientError) as exc_info:
+        aws_client.cloudformation.get_template_summary(StackName=stack_name)
+
+    snapshot.match("error", exc_info.value.response)
+
+
+@markers.aws.validated
+@skip_if_legacy_engine()
+def test_get_template_summary_no_resources(aws_client, snapshot):
+    with pytest.raises(ClientError) as exc_info:
+        aws_client.cloudformation.get_template_summary(TemplateBody="{}")
+    snapshot.match("error", exc_info.value.response)
+
+
+@markers.aws.validated
+@markers.snapshot.skip_snapshot_verify(
+    paths=["$..ResourceIdentifierSummaries..ResourceIdentifiers"]
+)
+@skip_if_legacy_engine()
+def test_get_template_summary_failed_stack(deploy_cfn_template, aws_client, snapshot):
+    snapshot.add_transformer(snapshot.transform.cloudformation_api())
+
+    template = {
+        "Resources": {
+            "MyParameter": {
+                "Type": "AWS::SSM::Parameter",
+                "Properties": {
+                    "Type": "String",
+                    # Note: missing Value parameter so the resource provider should fail
+                },
+            },
+        },
+    }
+
+    stack_name = f"stack-{short_uid()}"
+    with pytest.raises(StackDeployError):
+        deploy_cfn_template(template=json.dumps(template), stack_name=stack_name)
+
+    summary = aws_client.cloudformation.get_template_summary(StackName=stack_name)
+    snapshot.match("template-summary", summary)
 
 
 @markers.aws.validated
@@ -115,3 +189,64 @@ def test_validate_invalid_json_template_should_fail(aws_client, snapshot):
         aws_client.cloudformation.validate_template(TemplateBody=invalid_json)
 
     snapshot.match("validate-invalid-json", ctx.value.response)
+
+
+@skip_if_legacy_engine()
+@markers.aws.validated
+def test_get_template_no_arguments(aws_client, snapshot):
+    with pytest.raises(ClientError) as exc_info:
+        aws_client.cloudformation.get_template()
+    snapshot.match("stack-error", exc_info.value.response)
+
+
+@markers.aws.validated
+def test_get_template_missing_resources_stack(aws_client, snapshot):
+    with pytest.raises(ClientError) as exc_info:
+        aws_client.cloudformation.get_template(StackName="does-not-exist")
+    snapshot.match("stack-error", exc_info.value.response)
+
+
+@skip_if_legacy_engine()
+@markers.aws.validated
+def test_get_template_missing_resources_change_set(aws_client, snapshot):
+    with pytest.raises(ClientError) as exc_info:
+        aws_client.cloudformation.get_template(ChangeSetName="does-not-exist")
+    snapshot.match("change-set-error", exc_info.value.response)
+
+
+@skip_if_legacy_engine()
+@markers.aws.validated
+def test_get_template_missing_resources_change_set_id(aws_client, snapshot):
+    change_set_id = (
+        "arn:aws:cloudformation:us-east-1:000000000000:changeSet/change-set-926829fe/d065e78c"
+    )
+    snapshot.add_transformer(snapshot.transform.regex(change_set_id, "<change-set-id>"))
+    with pytest.raises(ClientError) as exc_info:
+        aws_client.cloudformation.get_template(ChangeSetName=change_set_id)
+    snapshot.match("change-set-error", exc_info.value.response)
+
+
+@markers.aws.validated
+def test_create_stack_invalid_yaml_template_should_fail(aws_client, snapshot):
+    snapshot.add_transformer(snapshot.transform.cloudformation_api())
+    # add transformer to ignore the error location
+    # TODO: add this information back in to improve the UX
+    snapshot.add_transformer(snapshot.transform.regex(r"\s+\([^)]+\)", ""))
+
+    stack_name = f"stack-{short_uid()}"
+    invalid_yaml = textwrap.dedent(
+        """\
+        Resources:
+          MyBucket:
+            Type: AWS::S3::Bucket
+            Properties:
+                BucketName: test
+              VersioningConfiguration:
+                Status: Enabled
+        """
+    )
+
+    with pytest.raises(ClientError) as ctx:
+        aws_client.cloudformation.create_stack(StackName=stack_name, TemplateBody=invalid_yaml)
+
+    snapshot.match("create-invalid-yaml", ctx.value.response)

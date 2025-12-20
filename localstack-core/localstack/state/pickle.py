@@ -30,13 +30,10 @@ https://dill.readthedocs.io/en/latest/index.html?highlight=register#dill.Pickler
 
 import inspect
 from collections.abc import Callable
-from typing import IO, Any, BinaryIO, Generic, TypeVar
+from typing import Any, BinaryIO, Generic, TypeVar
 
 import dill
-import jsonpickle
 from dill._dill import MetaCatchingDict
-
-from localstack import config
 
 from .core import Decoder, Encoder
 
@@ -64,7 +61,7 @@ def register(cls: type = None, subclasses: bool = False):
         elif callable(fn):
             add_dispatch_entry(cls, fn, subclasses=subclasses)
         else:
-            raise ValueError("cannot register %s" % fn)
+            raise ValueError(f"cannot register {fn}")
 
         return fn
 
@@ -240,7 +237,7 @@ class PickleEncoder(Encoder):
     def __init__(self, pickler_class: type[dill.Pickler] = None):
         self.pickler_class = pickler_class or Pickler
 
-    def encode(self, obj: Any, file: BinaryIO):
+    def encode(self, obj: Any, file: BinaryIO, py_type: type = None) -> Any:
         return self.pickler_class(file).dump(obj)
 
 
@@ -255,56 +252,20 @@ class PickleDecoder(Decoder):
     def __init__(self, unpickler_class: type[dill.Unpickler] = None):
         self.unpickler_class = unpickler_class or dill.Unpickler
 
-    def decode(self, file: BinaryIO) -> Any:
+    def decode(self, file: BinaryIO, py_type=None) -> Any:
         return self.unpickler_class(file).load()
 
 
-class JsonEncoder(Encoder):
-    """
-    An Encoder that uses ``jsonpickle`` under the hood.
-    """
-
-    def __init__(self, pickler_class: type[jsonpickle.Pickler] = None):
-        self.pickler_class = pickler_class or jsonpickle.Pickler()
-
-    def encode(self, obj: Any, file: IO[bytes]):
-        json_str = jsonpickle.encode(obj, context=self.pickler_class)
-        file.write(json_str.encode("utf-8"))
-
-
-class JsonDecoder(Decoder):
-    """
-    A Decoder that uses ``jsonpickle`` under the hood.
-    """
-
-    unpickler_class: type[jsonpickle.Unpickler]
-
-    def __init__(self, unpickler_class: type[jsonpickle.Unpickler] = None):
-        self.unpickler_class = unpickler_class or jsonpickle.Unpickler()
-
-    def decode(self, file: IO[bytes]) -> Any:
-        json_str = file.read().decode("utf-8")
-        return jsonpickle.decode(json_str, context=self.unpickler_class)
-
-
 def get_default_encoder() -> Encoder:
-    match config.STATE_SERIALIZATION_BACKEND:
-        case "jsonpickle":
-            return JsonEncoder()
-        case "dill":
-            return PickleEncoder()
-        case _:
-            return PickleEncoder()
+    from .codecs import get_default_encoder
+
+    return get_default_encoder()
 
 
 def get_default_decoder() -> Decoder:
-    match config.STATE_SERIALIZATION_BACKEND:
-        case "jsonpickle":
-            return JsonDecoder()
-        case "dill":
-            return PickleDecoder()
-        case _:
-            return PickleDecoder()
+    from .codecs import get_default_decoder
+
+    return get_default_decoder()
 
 
 class ObjectStateReducer(Generic[_T]):

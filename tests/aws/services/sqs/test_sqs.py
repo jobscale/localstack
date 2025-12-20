@@ -82,6 +82,7 @@ def aws_sqs_client(aws_client, request: str) -> "SQSClient":
 
 
 class TestSqsProvider:
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_get_queue_url_contains_localstack_host(
         self,
@@ -228,6 +229,7 @@ class TestSqsProvider:
             "You must wait 60 seconds after deleting a queue before you can create another with the same name."
         )
 
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_create_queue_recently_deleted_cache(
         self,
@@ -1080,6 +1082,132 @@ class TestSqsProvider:
         retry(_assert)
 
     @markers.aws.validated
+    def test_approximate_number_of_messages_not_visible(self, sqs_create_queue, aws_sqs_client):
+        # note that this test takes a bit longer when running on AWS, because we need to wait for propagation of
+        # queue attributes
+        queue_url = sqs_create_queue(
+            Attributes={
+                "VisibilityTimeout": "60" if is_aws_cloud() else "5",
+            },
+        )
+
+        aws_sqs_client.send_message(QueueUrl=queue_url, MessageBody="message-1")
+        aws_sqs_client.send_message(QueueUrl=queue_url, MessageBody="message-2")
+        aws_sqs_client.send_message(QueueUrl=queue_url, MessageBody="message-3")
+        aws_sqs_client.send_message(QueueUrl=queue_url, MessageBody="message-4")
+        aws_sqs_client.send_message(QueueUrl=queue_url, MessageBody="message-5")
+        aws_sqs_client.send_message(QueueUrl=queue_url, MessageBody="message-6")
+
+        # receive 1 message (from message group 1), now 5 messages should be visible
+        aws_sqs_client.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=1)
+
+        def _assert_attributes_before_visibility_timeout():
+            _result = aws_sqs_client.get_queue_attributes(
+                QueueUrl=queue_url,
+                AttributeNames=[
+                    "ApproximateNumberOfMessages",
+                    "ApproximateNumberOfMessagesNotVisible",
+                    "ApproximateNumberOfMessagesDelayed",
+                ],
+            )
+            assert _result["Attributes"] == {
+                "ApproximateNumberOfMessages": "5",
+                "ApproximateNumberOfMessagesNotVisible": "1",
+                "ApproximateNumberOfMessagesDelayed": "0",
+            }
+
+        retry(_assert_attributes_before_visibility_timeout, retries=60, sleep=1)
+
+        def _assert_after_visibility_timeout():
+            _result = aws_sqs_client.get_queue_attributes(
+                QueueUrl=queue_url,
+                AttributeNames=[
+                    "ApproximateNumberOfMessages",
+                    "ApproximateNumberOfMessagesNotVisible",
+                    "ApproximateNumberOfMessagesDelayed",
+                ],
+            )
+            assert _result["Attributes"] == {
+                "ApproximateNumberOfMessages": "6",
+                "ApproximateNumberOfMessagesNotVisible": "0",
+                "ApproximateNumberOfMessagesDelayed": "0",
+            }
+
+        retry(_assert_after_visibility_timeout, retries=60, sleep=1)
+
+    @markers.aws.validated
+    def test_fifo_approximate_number_of_messages_not_visible(
+        self, sqs_create_queue, aws_sqs_client
+    ):
+        # note that this test takes a bit longer when running on AWS, because we need to wait for propagation of
+        # queue attributes
+        queue_url = sqs_create_queue(
+            QueueName=f"queue-{short_uid()}.fifo",
+            Attributes={
+                "FifoQueue": "True",
+                "ContentBasedDeduplication": "True",
+                "VisibilityTimeout": "60" if is_aws_cloud() else "5",
+            },
+        )
+
+        aws_sqs_client.send_message(QueueUrl=queue_url, MessageBody="message-1", MessageGroupId="1")
+        aws_sqs_client.send_message(QueueUrl=queue_url, MessageBody="message-2", MessageGroupId="1")
+        aws_sqs_client.send_message(QueueUrl=queue_url, MessageBody="message-3", MessageGroupId="2")
+        aws_sqs_client.send_message(QueueUrl=queue_url, MessageBody="message-4", MessageGroupId="2")
+        aws_sqs_client.send_message(QueueUrl=queue_url, MessageBody="message-5", MessageGroupId="3")
+        aws_sqs_client.send_message(QueueUrl=queue_url, MessageBody="message-6", MessageGroupId="3")
+
+        # receive 2 messages (from message group 1 and group 2), now two groups are invisible (4 messages), but only 2
+        # messages should be marked as truly invisible (the ones received)
+        message_1 = aws_sqs_client.receive_message(
+            QueueUrl=queue_url,
+            MaxNumberOfMessages=1,
+            MessageSystemAttributeNames=["MessageGroupId"],
+        )
+        message_2 = aws_sqs_client.receive_message(
+            QueueUrl=queue_url,
+            MaxNumberOfMessages=1,
+            MessageSystemAttributeNames=["MessageGroupId"],
+        )
+
+        assert message_1["Messages"][0]["Attributes"]["MessageGroupId"] == "1"
+        assert message_2["Messages"][0]["Attributes"]["MessageGroupId"] == "2"
+
+        def _assert_attributes_before_visibility_timeout():
+            _result = aws_sqs_client.get_queue_attributes(
+                QueueUrl=queue_url,
+                AttributeNames=[
+                    "ApproximateNumberOfMessages",
+                    "ApproximateNumberOfMessagesNotVisible",
+                    "ApproximateNumberOfMessagesDelayed",
+                ],
+            )
+            assert _result["Attributes"] == {
+                "ApproximateNumberOfMessages": "4",
+                "ApproximateNumberOfMessagesNotVisible": "2",
+                "ApproximateNumberOfMessagesDelayed": "0",
+            }
+
+        retry(_assert_attributes_before_visibility_timeout, retries=60, sleep=1)
+
+        def _assert_after_visibility_timeout():
+            _result = aws_sqs_client.get_queue_attributes(
+                QueueUrl=queue_url,
+                AttributeNames=[
+                    "ApproximateNumberOfMessages",
+                    "ApproximateNumberOfMessagesNotVisible",
+                    "ApproximateNumberOfMessagesDelayed",
+                ],
+            )
+            assert _result["Attributes"] == {
+                "ApproximateNumberOfMessages": "6",
+                "ApproximateNumberOfMessagesNotVisible": "0",
+                "ApproximateNumberOfMessagesDelayed": "0",
+            }
+
+        retry(_assert_after_visibility_timeout, retries=60, sleep=1)
+
+    @markers.aws.validated
     def test_receive_after_visibility_timeout(self, sqs_create_queue, aws_sqs_client):
         queue_url = sqs_create_queue(Attributes={"VisibilityTimeout": "1"})
 
@@ -1149,6 +1277,40 @@ class TestSqsProvider:
         with pytest.raises(ClientError) as e:
             aws_sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
         snapshot.match("delete_after_timeout_fifo", e.value.response)
+
+    @markers.aws.validated
+    def test_fifo_delete_after_visibility_timeout_extended(
+        self, sqs_create_queue, aws_sqs_client, snapshot
+    ):
+        timeout = 1
+        queue_url = sqs_create_queue(
+            QueueName=f"test-{short_uid()}.fifo",
+            Attributes={
+                "VisibilityTimeout": f"{timeout}",
+                "FifoQueue": "True",
+                "ContentBasedDeduplication": "True",
+            },
+        )
+
+        aws_sqs_client.send_message(QueueUrl=queue_url, MessageBody="foobar", MessageGroupId="1")
+        # receive the message
+        initial_receive = aws_sqs_client.receive_message(QueueUrl=queue_url, WaitTimeSeconds=5)
+        snapshot.match("received_sqs_message", initial_receive)
+        receipt_handle = initial_receive["Messages"][0]["ReceiptHandle"]
+
+        # extend the visibility timeout window
+        aws_sqs_client.change_message_visibility(
+            QueueUrl=queue_url, ReceiptHandle=receipt_handle, VisibilityTimeout=5
+        )
+
+        # exceed the original visibility timeout window but not the extended one
+        time.sleep(timeout + 0.5)
+        aws_sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+
+        snapshot.match(
+            "delete_after_timeout_fifo_extended",
+            aws_sqs_client.receive_message(QueueUrl=queue_url),
+        )
 
     @markers.aws.validated
     def test_receive_terminate_visibility_timeout(self, sqs_queue, aws_sqs_client):
@@ -1482,6 +1644,7 @@ class TestSqsProvider:
         bodies = {message["Body"] for message in messages}
         assert bodies == {"0", "1", "2", "3", "4", "5", "6", "7", "8"}
 
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_external_endpoint(self, monkeypatch, sqs_create_queue, aws_sqs_client):
         external_host = "external-host"
@@ -1502,6 +1665,7 @@ class TestSqsProvider:
         receive_result = aws_sqs_client.receive_message(QueueUrl=queue_url)
         assert receive_result["Messages"][0]["Body"] == message_body
 
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_external_hostname_via_host_header(self, monkeypatch, sqs_create_queue, region_name):
         """test making a request with a different external hostname/port being returned"""
@@ -1944,6 +2108,69 @@ class TestSqsProvider:
         assert response["Messages"][0]["Body"] == "g2-m1"
         assert response["Messages"][1]["Body"] == "g1-m1"
         assert len(response["Messages"]) == 2
+
+    @pytest.mark.parametrize(
+        "message_position", [0, 1, 2], ids=["0-visible", "1-visible", "2-visible"]
+    )
+    @markers.aws.validated
+    def test_fifo_group_visibility_extends_with_change_message_visibility(
+        self, sqs_create_queue, aws_sqs_client, snapshot, message_position
+    ):
+        initial_visibility_timeout = 1
+        extended_visibility_timeout = 4
+        queue_name = f"test-queue-{short_uid()}.fifo"
+        queue_url = sqs_create_queue(
+            QueueName=queue_name,
+            Attributes={
+                "FifoQueue": "true",
+                "VisibilityTimeout": f"{initial_visibility_timeout}",
+            },
+        )
+
+        # Send 3 messages
+        aws_sqs_client.send_message(
+            QueueUrl=queue_url,
+            MessageBody="foo",
+            MessageGroupId="1",
+            MessageDeduplicationId="foo",
+        )
+        aws_sqs_client.send_message(
+            QueueUrl=queue_url,
+            MessageBody="bar",
+            MessageGroupId="1",
+            MessageDeduplicationId="bar",
+        )
+        aws_sqs_client.send_message(
+            QueueUrl=queue_url,
+            MessageBody="baz",
+            MessageGroupId="1",
+            MessageDeduplicationId="baz",
+        )
+
+        # Receive all messages
+        response = aws_sqs_client.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=5)
+
+        # We should have received all 3 messages from the group
+        snapshot.match("receive_all_messages", response)
+
+        receipt_handle = response["Messages"][message_position]["ReceiptHandle"]
+        # extend visibility timeout of one message
+        aws_sqs_client.change_message_visibility(
+            QueueUrl=queue_url,
+            ReceiptHandle=receipt_handle,
+            VisibilityTimeout=extended_visibility_timeout,
+        )
+
+        # Wait until the other 2 message become visible again, but the extended message is still invisible
+        time.sleep(
+            initial_visibility_timeout
+            + (extended_visibility_timeout - initial_visibility_timeout) / 2
+        )
+
+        response = aws_sqs_client.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=5)
+
+        # The extended message and all messages within the same group that come after it are invisible.
+        snapshot.match("some-messages-invisible", response)
 
     @markers.aws.validated
     def test_fifo_message_group_visibility_after_delete(self, sqs_create_queue, aws_sqs_client):
@@ -3962,6 +4189,7 @@ class TestSqsProvider:
         )
         assert int(approx_nr_of_messages["Attributes"]["ApproximateNumberOfMessages"]) == 0
 
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_list_queues_multi_region_without_endpoint_strategy(
         self, aws_client_factory, cleanups, monkeypatch
@@ -4419,6 +4647,29 @@ class TestSqsProvider:
             ],
         )
         snapshot.match("sse_sqs_attributes", response)
+
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(paths=["$..Attributes.SqsManagedSseEnabled"])
+    def test_set_queue_attributes_default_values(self, sqs_create_queue, snapshot, aws_sqs_client):
+        queue_url = sqs_create_queue()
+        response = aws_sqs_client.get_queue_attributes(QueueUrl=queue_url, AttributeNames=["All"])
+        snapshot.match("get-queue-attributes-initial-values", response)
+
+        updated_attributes = {
+            "KmsMasterKeyId": "testKeyId",
+            "KmsDataKeyReusePeriodSeconds": "6000",
+        }
+        aws_sqs_client.set_queue_attributes(QueueUrl=queue_url, Attributes=updated_attributes)
+        response = aws_sqs_client.get_queue_attributes(QueueUrl=queue_url, AttributeNames=["All"])
+        snapshot.match("get-queue-attributes-after-update", response)
+
+        default_attributes = {
+            "KmsMasterKeyId": "",
+            "KmsDataKeyReusePeriodSeconds": "300",
+        }
+        aws_sqs_client.set_queue_attributes(QueueUrl=queue_url, Attributes=default_attributes)
+        response = aws_sqs_client.get_queue_attributes(QueueUrl=queue_url, AttributeNames=["All"])
+        snapshot.match("get-queue-attributes-after-set-to-defaults", response)
 
     @pytest.mark.skip(reason="validation currently not implemented in localstack")
     @markers.aws.validated
@@ -5165,6 +5416,7 @@ class TestSqsQueryApi:
         assert response.ok
         assert "foobar" in response.text
 
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_queue_url_format_path_strategy(
         self, sqs_create_queue, account_id, region_name, monkeypatch

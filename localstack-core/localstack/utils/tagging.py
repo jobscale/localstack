@@ -1,18 +1,20 @@
-from typing import Optional
-
-
 class TaggingService:
-    def __init__(self, key_field: str = None, value_field: str = None):
+    key_field: str
+    value_field: str
+
+    tags: dict[str, dict[str, str]]
+
+    def __init__(self, key_field: str = "Key", value_field: str = "Value"):
         """
         :param key_field: the field name representing the tag key as used by botocore specs
         :param value_field: the field name representing the tag value as used by botocore specs
         """
-        self.key_field = key_field or "Key"
-        self.value_field = value_field or "Value"
+        self.key_field = key_field
+        self.value_field = value_field
 
         self.tags = {}
 
-    def list_tags_for_resource(self, arn: str, root_name: Optional[str] = None):
+    def list_tags_for_resource(self, arn: str, root_name: str | None = None):
         root_name = root_name or "Tags"
 
         result = []

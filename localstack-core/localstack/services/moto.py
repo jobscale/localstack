@@ -1,5 +1,5 @@
 """
-This module provides tools to call moto using moto and botocore internals without going through the moto HTTP server.
+This module provides tools to call Moto service implementations.
 """
 
 import copy
@@ -65,6 +65,7 @@ def call_moto_with_request(
         action=context.operation.name,
         parameters=service_request,
         region=context.region,
+        protocol=context.protocol,
     )
     # we keep the headers from the original request, but override them with the ones created from the `service_request`
     headers = copy.deepcopy(context.request.headers)

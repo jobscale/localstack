@@ -1442,7 +1442,7 @@
     }
   },
   "tests/aws/services/s3/test_s3_api.py::TestS3BucketEncryption::test_s3_bucket_encryption_sse_s3": {
-    "recorded-date": "21-01-2025, 18:10:49",
+    "recorded-date": "27-11-2025, 15:27:11",
     "recorded-content": {
       "put-bucket-enc": {
         "ResponseMetadata": {
@@ -1492,7 +1492,7 @@
     }
   },
   "tests/aws/services/s3/test_s3_api.py::TestS3BucketEncryption::test_s3_bucket_encryption_sse_kms_aws_managed_key": {
-    "recorded-date": "21-01-2025, 18:10:55",
+    "recorded-date": "11-11-2025, 11:17:47",
     "recorded-content": {
       "put-bucket-enc": {
         "ResponseMetadata": {
@@ -1520,7 +1520,7 @@
         "BucketKeyEnabled": true,
         "ChecksumCRC32": "J1mCHA==",
         "ChecksumType": "FULL_OBJECT",
-        "ETag": "\"08d16e16e9b2006587e811c5d81ea74f\"",
+        "ETag": "\"69e1edd35a04ba6a5a6038de9f7fa8a5\"",
         "SSEKMSKeyId": "arn:<partition>:kms:<region>:111111111111:key/<uuid:1>",
         "ServerSideEncryption": "aws:kms",
         "ResponseMetadata": {
@@ -1533,6 +1533,7 @@
           "AWSAccountId": "111111111111",
           "Arn": "arn:<partition>:kms:<region>:111111111111:key/<uuid:1>",
           "CreationDate": "datetime",
+          "CurrentKeyMaterialId": "<current-key-material-id:1>",
           "CustomerMasterKeySpec": "SYMMETRIC_DEFAULT",
           "Description": "Default key that protects my S3 objects when no other key is defined",
           "Enabled": true,
@@ -1557,7 +1558,7 @@
         "BucketKeyEnabled": true,
         "ContentLength": 14,
         "ContentType": "binary/octet-stream",
-        "ETag": "\"08d16e16e9b2006587e811c5d81ea74f\"",
+        "ETag": "\"69e1edd35a04ba6a5a6038de9f7fa8a5\"",
         "LastModified": "datetime",
         "Metadata": {},
         "SSEKMSKeyId": "arn:<partition>:kms:<region>:111111111111:key/<uuid:1>",
@@ -1575,7 +1576,7 @@
         "ChecksumType": "FULL_OBJECT",
         "ContentLength": 14,
         "ContentType": "binary/octet-stream",
-        "ETag": "\"08d16e16e9b2006587e811c5d81ea74f\"",
+        "ETag": "\"69e1edd35a04ba6a5a6038de9f7fa8a5\"",
         "LastModified": "datetime",
         "Metadata": {},
         "SSEKMSKeyId": "arn:<partition>:kms:<region>:111111111111:key/<uuid:1>",
@@ -1678,7 +1679,7 @@
     }
   },
   "tests/aws/services/s3/test_s3_api.py::TestS3BucketObjectTagging::test_bucket_tagging_crud": {
-    "recorded-date": "21-01-2025, 18:11:06",
+    "recorded-date": "27-11-2025, 14:45:14",
     "recorded-content": {
       "get-bucket-tags-empty": {
         "Error": {
@@ -1746,7 +1747,7 @@
     }
   },
   "tests/aws/services/s3/test_s3_api.py::TestS3BucketObjectTagging::test_object_tagging_crud": {
-    "recorded-date": "21-01-2025, 18:11:10",
+    "recorded-date": "27-11-2025, 14:45:27",
     "recorded-content": {
       "put-object": {
         "ChecksumCRC32": "lpqTBg==",
@@ -1854,7 +1855,7 @@
     }
   },
   "tests/aws/services/s3/test_s3_api.py::TestS3BucketObjectTagging::test_put_object_with_tags": {
-    "recorded-date": "21-01-2025, 18:11:19",
+    "recorded-date": "27-11-2025, 14:45:39",
     "recorded-content": {
       "put-object": {
         "ChecksumCRC32": "lpqTBg==",
@@ -1912,6 +1913,7 @@
         "LastModified": "datetime",
         "Metadata": {},
         "ServerSideEncryption": "AES256",
+        "TagCount": 1,
         "ResponseMetadata": {
           "HTTPHeaders": {},
           "HTTPStatusCode": 200
@@ -1969,7 +1971,7 @@
     }
   },
   "tests/aws/services/s3/test_s3_api.py::TestS3BucketObjectTagging::test_bucket_tagging_exc": {
-    "recorded-date": "21-01-2025, 18:11:07",
+    "recorded-date": "27-11-2025, 14:45:22",
     "recorded-content": {
       "get-no-bucket-tags": {
         "Error": {
@@ -2007,7 +2009,7 @@
     }
   },
   "tests/aws/services/s3/test_s3_api.py::TestS3BucketObjectTagging::test_object_tagging_versioned": {
-    "recorded-date": "21-01-2025, 18:11:16",
+    "recorded-date": "27-11-2025, 14:45:36",
     "recorded-content": {
       "put-obj-0": {
         "ChecksumCRC32": "XCKz9A==",
@@ -2079,6 +2081,22 @@
           }
         ],
         "VersionId": "<version-id:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-object-tags-deleted-current": {
+        "TagSet": [],
+        "VersionId": "<version-id:2>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-object-tags-previous-version-deleted": {
+        "TagSet": [],
+        "VersionId": "<version-id:2>",
         "ResponseMetadata": {
           "HTTPHeaders": {},
           "HTTPStatusCode": 200
@@ -2167,7 +2185,7 @@
     }
   },
   "tests/aws/services/s3/test_s3_api.py::TestS3BucketObjectTagging::test_object_tagging_exc": {
-    "recorded-date": "21-01-2025, 18:11:13",
+    "recorded-date": "27-11-2025, 14:45:30",
     "recorded-content": {
       "get-no-bucket-tags": {
         "Error": {
@@ -2262,7 +2280,7 @@
     }
   },
   "tests/aws/services/s3/test_s3_api.py::TestS3BucketObjectTagging::test_object_tags_delete_or_overwrite_object": {
-    "recorded-date": "21-01-2025, 18:11:22",
+    "recorded-date": "27-11-2025, 14:45:42",
     "recorded-content": {
       "get-object-after-creation": {
         "TagSet": [
@@ -2293,7 +2311,7 @@
     }
   },
   "tests/aws/services/s3/test_s3_api.py::TestS3BucketObjectTagging::test_tagging_validation": {
-    "recorded-date": "21-01-2025, 18:11:25",
+    "recorded-date": "27-11-2025, 15:16:36",
     "recorded-content": {
       "put-bucket-tags-duplicate-keys": {
         "Error": {
@@ -2317,12 +2335,32 @@
           "HTTPStatusCode": 400
         }
       },
+      "put-bucket-tags-none-key": {
+        "Error": {
+          "Code": "MalformedXML",
+          "Message": "The XML you provided was not well-formed or did not validate against our published schema"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
       "put-bucket-tags-invalid-value": {
         "Error": {
           "Code": "InvalidTag",
           "Message": "The TagValue you have provided is invalid",
           "TagKey": "Key1",
           "TagValue": "Val1,Val2"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "put-bucket-tags-none-value": {
+        "Error": {
+          "Code": "MalformedXML",
+          "Message": "The XML you provided was not well-formed or did not validate against our published schema"
         },
         "ResponseMetadata": {
           "HTTPHeaders": {},
@@ -2367,6 +2405,26 @@
           "Code": "InvalidTag",
           "Message": "Your TagKey cannot be prefixed with aws:",
           "TagKey": "aws:prefixed"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "put-object-tags-none-key": {
+        "Error": {
+          "Code": "MalformedXML",
+          "Message": "The XML you provided was not well-formed or did not validate against our published schema"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "put-object-tags-none-value": {
+        "Error": {
+          "Code": "MalformedXML",
+          "Message": "The XML you provided was not well-formed or did not validate against our published schema"
         },
         "ResponseMetadata": {
           "HTTPHeaders": {},
@@ -4687,6 +4745,736 @@
         "ResponseMetadata": {
           "HTTPHeaders": {},
           "HTTPStatusCode": 501
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3BucketNotificationConfiguration::test_bucket_notification_with_missing_values_in_rule": {
+    "recorded-date": "02-09-2025, 21:38:48",
+    "recorded-content": {
+      "invalid-rule-no-values": {
+        "Error": {
+          "Code": "MalformedXML",
+          "Message": "The XML you provided was not well-formed or did not validate against our published schema"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "invalid-rule-no-value": {
+        "Error": {
+          "Code": "MalformedXML",
+          "Message": "The XML you provided was not well-formed or did not validate against our published schema"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "invalid-rule-no-name": {
+        "Error": {
+          "Code": "MalformedXML",
+          "Message": "The XML you provided was not well-formed or did not validate against our published schema"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3BucketNotificationConfiguration::test_bucket_notification_with_invalid_filter_rules": {
+    "recorded-date": "02-09-2025, 21:37:07",
+    "recorded-content": {
+      "invalid_filter_name": {
+        "Error": {
+          "ArgumentName": "FilterRule.Name",
+          "ArgumentValue": "INVALID",
+          "Code": "InvalidArgument",
+          "Message": "filter rule name must be either prefix or suffix"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3BucketObjectTagging::test_put_object_tagging_none_value": {
+    "recorded-date": "27-11-2025, 14:45:32",
+    "recorded-content": {
+      "put-none-tag-set": {
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-object-tags-none": {
+        "TagSet": [],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3BucketObjectTagging::test_put_bucket_tagging_none_value": {
+    "recorded-date": "27-11-2025, 14:45:24",
+    "recorded-content": {
+      "put-bucket-tags-origin": {
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 204
+        }
+      },
+      "put-none-tag-set": {
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 204
+        }
+      },
+      "no-such-tag-set": {
+        "Error": {
+          "BucketName": "<bucket-name:1>",
+          "Code": "NoSuchTagSet",
+          "Message": "The TagSet does not exist"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 404
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3Multipart::test_upload_part_copy_with_copy_source_if_match_and_if_unmodified_since_match": {
+    "recorded-date": "06-09-2025, 09:23:25",
+    "recorded-content": {
+      "upload-part-copy": {
+        "CopyPartResult": {
+          "ETag": "<e-tag:1>",
+          "LastModified": "datetime"
+        },
+        "ServerSideEncryption": "AES256",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "list-parts": {
+        "Bucket": "bucket",
+        "Initiator": {
+          "DisplayName": "display-name",
+          "ID": "i-d"
+        },
+        "IsTruncated": false,
+        "Key": "destination_file.txt",
+        "MaxParts": 1000,
+        "NextPartNumberMarker": 1,
+        "Owner": {
+          "ID": "i-d"
+        },
+        "PartNumberMarker": 0,
+        "Parts": [
+          {
+            "ETag": "<e-tag:1>",
+            "LastModified": "datetime",
+            "PartNumber": 1,
+            "Size": 10
+          }
+        ],
+        "StorageClass": "STANDARD",
+        "UploadId": "<upload-id:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3Multipart::test_upload_part_copy_with_copy_source_if_none_match_and_if_unmodified_since_match_failed": {
+    "recorded-date": "06-09-2025, 09:24:36",
+    "recorded-content": {
+      "upload-part-copy-source-unmodified-since-and-if-none-match": {
+        "Error": {
+          "Code": "PreconditionFailed",
+          "Condition": "x-amz-copy-source-If-Unmodified-Since",
+          "Message": "At least one of the pre-conditions you specified did not hold"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 412
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3Multipart::test_upload_part_copy_with_if_modified_since_failed": {
+    "recorded-date": "06-09-2025, 09:24:51",
+    "recorded-content": {
+      "upload-part-copy-source-modified-since-match": {
+        "Error": {
+          "Code": "PreconditionFailed",
+          "Condition": "x-amz-copy-source-If-Modified-Since",
+          "Message": "At least one of the pre-conditions you specified did not hold"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 412
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3Multipart::test_upload_part_copy_with_copy_source_if_match_failed": {
+    "recorded-date": "06-09-2025, 09:22:26",
+    "recorded-content": {
+      "upload-part-copy-source-if-match": {
+        "Error": {
+          "Code": "PreconditionFailed",
+          "Condition": "x-amz-copy-source-If-Match",
+          "Message": "At least one of the pre-conditions you specified did not hold"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 412
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3Multipart::test_upload_part_copy_with_copy_source_if_none_match_failed": {
+    "recorded-date": "06-09-2025, 09:22:50",
+    "recorded-content": {
+      "upload-part-copy-source-if-none-match": {
+        "Error": {
+          "Code": "PreconditionFailed",
+          "Condition": "x-amz-copy-source-If-None-Match",
+          "Message": "At least one of the pre-conditions you specified did not hold"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 412
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3Multipart::test_upload_part_copy_with_copy_source_if_unmodified_since_match_failed": {
+    "recorded-date": "06-09-2025, 09:23:12",
+    "recorded-content": {
+      "upload-part-copy-source-unmodified-since-match": {
+        "Error": {
+          "Code": "PreconditionFailed",
+          "Condition": "x-amz-copy-source-If-Unmodified-Since",
+          "Message": "At least one of the pre-conditions you specified did not hold"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 412
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3Multipart::test_upload_part_copy_with_copy_source_if_match_success": {
+    "recorded-date": "06-09-2025, 09:36:51",
+    "recorded-content": {
+      "upload-part-copy-if-match": {
+        "CopyPartResult": {
+          "ETag": "<e-tag:1>",
+          "LastModified": "datetime"
+        },
+        "ServerSideEncryption": "AES256",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "list-parts": {
+        "Bucket": "bucket",
+        "Initiator": {
+          "DisplayName": "display-name",
+          "ID": "i-d"
+        },
+        "IsTruncated": false,
+        "Key": "destination_file.txt",
+        "MaxParts": 1000,
+        "NextPartNumberMarker": 1,
+        "Owner": {
+          "ID": "i-d"
+        },
+        "PartNumberMarker": 0,
+        "Parts": [
+          {
+            "ETag": "<e-tag:1>",
+            "LastModified": "datetime",
+            "PartNumber": 1,
+            "Size": 10
+          }
+        ],
+        "StorageClass": "STANDARD",
+        "UploadId": "<upload-id:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3Multipart::test_upload_part_copy_with_copy_source_if_match_none_success": {
+    "recorded-date": "06-09-2025, 09:39:55",
+    "recorded-content": {
+      "upload-part-copy-if-none-match": {
+        "CopyPartResult": {
+          "ETag": "<e-tag:1>",
+          "LastModified": "datetime"
+        },
+        "ServerSideEncryption": "AES256",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "list-parts": {
+        "Bucket": "bucket",
+        "Initiator": {
+          "DisplayName": "display-name",
+          "ID": "i-d"
+        },
+        "IsTruncated": false,
+        "Key": "destination_file.txt",
+        "MaxParts": 1000,
+        "NextPartNumberMarker": 1,
+        "Owner": {
+          "ID": "i-d"
+        },
+        "PartNumberMarker": 0,
+        "Parts": [
+          {
+            "ETag": "<e-tag:1>",
+            "LastModified": "datetime",
+            "PartNumber": 1,
+            "Size": 10
+          }
+        ],
+        "StorageClass": "STANDARD",
+        "UploadId": "<upload-id:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3Multipart::test_upload_part_copy_with_copy_source_if_unmodified_since_success": {
+    "recorded-date": "06-09-2025, 09:47:30",
+    "recorded-content": {
+      "upload-part-copy-if-unmodified-since": {
+        "CopyPartResult": {
+          "ETag": "<e-tag:1>",
+          "LastModified": "datetime"
+        },
+        "ServerSideEncryption": "AES256",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "list-parts": {
+        "Bucket": "bucket",
+        "Initiator": {
+          "DisplayName": "display-name",
+          "ID": "i-d"
+        },
+        "IsTruncated": false,
+        "Key": "destination_file.txt",
+        "MaxParts": 1000,
+        "NextPartNumberMarker": 1,
+        "Owner": {
+          "ID": "i-d"
+        },
+        "PartNumberMarker": 0,
+        "Parts": [
+          {
+            "ETag": "<e-tag:1>",
+            "LastModified": "datetime",
+            "PartNumber": 1,
+            "Size": 10
+          }
+        ],
+        "StorageClass": "STANDARD",
+        "UploadId": "<upload-id:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3Multipart::test_upload_part_copy_with_copy_source_if_modified_since_success": {
+    "recorded-date": "06-09-2025, 10:07:29",
+    "recorded-content": {
+      "upload-part-copy-if-modified-since": {
+        "CopyPartResult": {
+          "ETag": "<e-tag:1>",
+          "LastModified": "datetime"
+        },
+        "ServerSideEncryption": "AES256",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "list-parts": {
+        "Bucket": "bucket",
+        "Initiator": {
+          "DisplayName": "display-name",
+          "ID": "i-d"
+        },
+        "IsTruncated": false,
+        "Key": "destination_file.txt",
+        "MaxParts": 1000,
+        "NextPartNumberMarker": 1,
+        "Owner": {
+          "ID": "i-d"
+        },
+        "PartNumberMarker": 0,
+        "Parts": [
+          {
+            "ETag": "<e-tag:1>",
+            "LastModified": "datetime",
+            "PartNumber": 1,
+            "Size": 10
+          }
+        ],
+        "StorageClass": "STANDARD",
+        "UploadId": "<upload-id:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3Multipart::test_upload_part_copy_with_copy_source_if_modified_since_in_future_success": {
+    "recorded-date": "06-09-2025, 10:20:23",
+    "recorded-content": {
+      "upload-part-copy-if-modified-since-in-future": {
+        "CopyPartResult": {
+          "ETag": "<e-tag:1>",
+          "LastModified": "datetime"
+        },
+        "ServerSideEncryption": "AES256",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "list-parts": {
+        "Bucket": "bucket",
+        "Initiator": {
+          "DisplayName": "display-name",
+          "ID": "i-d"
+        },
+        "IsTruncated": false,
+        "Key": "destination_file.txt",
+        "MaxParts": 1000,
+        "NextPartNumberMarker": 1,
+        "Owner": {
+          "ID": "i-d"
+        },
+        "PartNumberMarker": 0,
+        "Parts": [
+          {
+            "ETag": "<e-tag:1>",
+            "LastModified": "datetime",
+            "PartNumber": 1,
+            "Size": 10
+          }
+        ],
+        "StorageClass": "STANDARD",
+        "UploadId": "<upload-id:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3BucketObjectTagging::test_create_bucket_with_tags": {
+    "recorded-date": "27-11-2025, 14:45:15",
+    "recorded-content": {
+      "create-bucket-with-tags": {
+        "Location": "<location:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-bucket-tags": {
+        "TagSet": [
+          {
+            "Key": "tag1",
+            "Value": "value1"
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3BucketObjectTagging::test_create_bucket_with_tags_us_east_1_idempotency": {
+    "recorded-date": "27-11-2025, 14:45:19",
+    "recorded-content": {
+      "create-bucket-with-tags": {
+        "Location": "/<bucket-name:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-bucket-tags": {
+        "TagSet": [
+          {
+            "Key": "tag1",
+            "Value": "value1"
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "create-bucket-different-tags": {
+        "Error": {
+          "BucketName": "<bucket-name:1>",
+          "Code": "BucketAlreadyOwnedByYou",
+          "Message": "Your previous request to create the named bucket succeeded and you already own it."
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 409
+        }
+      },
+      "create-bucket-with-no-tags": {
+        "Location": "/<bucket-name:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-bucket-tags-after-re-create": {
+        "TagSet": [
+          {
+            "Key": "tag1",
+            "Value": "value1"
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "create-bucket-with-same-tags": {
+        "Error": {
+          "BucketName": "<bucket-name:1>",
+          "Code": "BucketAlreadyOwnedByYou",
+          "Message": "Your previous request to create the named bucket succeeded and you already own it."
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 409
+        }
+      },
+      "create-bucket-with-empty-tags": {
+        "Location": "/<bucket-name:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-bucket-tags-after-create-empty": {
+        "TagSet": [
+          {
+            "Key": "tag1",
+            "Value": "value1"
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3BucketObjectTagging::test_create_bucket_with_tags_exc": {
+    "recorded-date": "27-11-2025, 15:19:32",
+    "recorded-content": {
+      "tags-key-none": {
+        "Error": {
+          "Code": "MalformedXML",
+          "Message": "The XML you provided was not well-formed or did not validate against our published schema"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "tags-value-none": {
+        "Error": {
+          "Code": "MalformedXML",
+          "Message": "The XML you provided was not well-formed or did not validate against our published schema"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "tags-key-aws-prefix": {
+        "Error": {
+          "Code": "InvalidTag",
+          "Message": "User-defined tag keys can't start with \"aws:\". This prefix is reserved for system tags. Remove \"aws:\" from your tag keys and try again."
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "tags-key-aws-duplicated-key": {
+        "Error": {
+          "Code": "InternalError",
+          "Message": "We encountered an internal error. Please try again."
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 500
+        }
+      },
+      "tags-key-aws-bad-value": {
+        "Error": {
+          "Code": "InvalidTag",
+          "Message": "The TagValue you have provided is invalid",
+          "TagKey": "test",
+          "TagValue": "value1,value2"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "tags-key-aws-bad-key": {
+        "Error": {
+          "Code": "InvalidTag",
+          "Message": "The TagKey you have provided is invalid",
+          "TagKey": "test,test2"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3BucketObjectTagging::test_create_bucket_with_empty_tags": {
+    "recorded-date": "27-11-2025, 14:45:17",
+    "recorded-content": {
+      "create-bucket-with-empty-tags": {
+        "Location": "/<bucket-name:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-bucket-tags": {
+        "Error": {
+          "BucketName": "<bucket-name:1>",
+          "Code": "NoSuchTagSet",
+          "Message": "The TagSet does not exist"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 404
+        }
+      },
+      "create-bucket-with-none-tags": {
+        "Location": "/<bucket-name:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3_api.py::TestS3BucketObjectTagging::test_head_object_with_tags": {
+    "recorded-date": "27-11-2025, 15:35:45",
+    "recorded-content": {
+      "put-object": {
+        "ChecksumCRC32": "lpqTBg==",
+        "ChecksumType": "FULL_OBJECT",
+        "ETag": "\"b635a7fc30aa9091e0d236bee77e6844\"",
+        "ServerSideEncryption": "AES256",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "head-obj-after-create": {
+        "AcceptRanges": "bytes",
+        "ContentLength": 12,
+        "ContentType": "binary/octet-stream",
+        "ETag": "\"b635a7fc30aa9091e0d236bee77e6844\"",
+        "LastModified": "datetime",
+        "Metadata": {},
+        "ServerSideEncryption": "AES256",
+        "TagCount": 3,
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "put-object-tags": {
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "head-obj-after-tagging": {
+        "AcceptRanges": "bytes",
+        "ContentLength": 12,
+        "ContentType": "binary/octet-stream",
+        "ETag": "\"b635a7fc30aa9091e0d236bee77e6844\"",
+        "LastModified": "datetime",
+        "Metadata": {},
+        "ServerSideEncryption": "AES256",
+        "TagCount": 1,
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "head-obj-after-overwrite": {
+        "AcceptRanges": "bytes",
+        "ContentLength": 12,
+        "ContentType": "binary/octet-stream",
+        "ETag": "\"b635a7fc30aa9091e0d236bee77e6844\"",
+        "LastModified": "datetime",
+        "Metadata": {},
+        "ServerSideEncryption": "AES256",
+        "TagCount": 3,
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "head-obj-after-removal": {
+        "AcceptRanges": "bytes",
+        "ContentLength": 12,
+        "ContentType": "binary/octet-stream",
+        "ETag": "\"b635a7fc30aa9091e0d236bee77e6844\"",
+        "LastModified": "datetime",
+        "Metadata": {},
+        "ServerSideEncryption": "AES256",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
         }
       }
     }

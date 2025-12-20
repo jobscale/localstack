@@ -5,7 +5,7 @@ import os
 import threading
 import time
 import zipfile
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -46,6 +46,23 @@ class TestCommon:
         env = common.isoformat_milliseconds(datetime(2010, 3, 20, 7, 24, 00, 0))
         assert env == "2010-03-20T07:24:00.000"
 
+    @pytest.mark.parametrize(
+        "str_format",
+        [
+            "2025-09-18T14:07:30",
+            "2025-09-18T14:07:30Z",
+            "2025-09-18T14:07:30.70300Z",
+            "18/Sep/2025:14:07:30 +0000",
+        ],
+    )
+    def test_parse_timestamp_timezone_aware(self, str_format):
+        datetime_obj = common.parse_timestamp(str_format)
+        # we cannot assert that tzinfo is `datetime.UTC` because it is only supported starting Python 3.11
+        # so we assert manually that the returned `tzinfo` is UTC
+        # we are using ZoneInfo("UTC")  in the `parse_timestamp` utility as it is in the import path of the CLI
+        assert datetime_obj.tzinfo is not None
+        assert datetime_obj.utcoffset() == timedelta(0)
+
     def test_base64_to_hex(self):
         env = common.base64_to_hex("Zm9vIGJhcg ==")
         assert env == b"666f6f20626172"
@@ -78,8 +95,20 @@ class TestCommon:
         test = datetime.now(UTC).timestamp()
         assert test == pytest.approx(env, 1)
 
-    def test_is_number(self):
-        assert common.is_number(5)
+    @pytest.mark.parametrize(
+        "value,is_number",
+        [
+            (5, True),
+            (-12.1, True),
+            (2e15, True),
+            ("test", False),
+            (False, False),
+            (True, False),
+            (None, False),
+        ],
+    )
+    def test_is_number(self, value, is_number):
+        assert common.is_number(value) == is_number
 
     def test_is_ip_address(self):
         assert common.is_ip_address("10.0.0.1")
@@ -190,7 +219,7 @@ class TestCommon:
 
         def fn():
             i = next(count)
-            e = RuntimeError("exception %d" % i)
+            e = RuntimeError(f"exception {i:d}")
             exceptions.append(e)
 
             if i == 2:
@@ -208,7 +237,7 @@ class TestCommon:
 
         def fn():
             i = next(count)
-            e = RuntimeError("exception %d" % i)
+            e = RuntimeError(f"exception {i:d}")
             exceptions.append(e)
 
             raise e
@@ -507,9 +536,9 @@ class TestCommonFileOperations:
 
 
 def test_save_load_file(tmp_path):
-    file_name = tmp_path / ("normal_permissions_%s" % short_uid())
-    content = "some_content_%s" % short_uid()
-    more_content = "some_more_content_%s" % short_uid()
+    file_name = tmp_path / (f"normal_permissions_{short_uid()}")
+    content = f"some_content_{short_uid()}"
+    more_content = f"some_more_content_{short_uid()}"
 
     save_file(file_name, content)
     assert content == load_file(file_name)
@@ -517,10 +546,19 @@ def test_save_load_file(tmp_path):
     assert content + more_content == load_file(file_name)
 
 
+def test_load_file_strict(tmp_path):
+    file_name = tmp_path / short_uid()
+    assert not os.path.isfile(file_name)
+
+    assert load_file(file_name) is None
+    with pytest.raises(FileNotFoundError):
+        load_file(file_name, strict=True)
+
+
 def test_save_load_file_with_permissions(tmp_path):
-    file_name = tmp_path / ("special_permissions_%s" % short_uid())
-    content = "some_content_%s" % short_uid()
-    more_content = "some_more_content_%s" % short_uid()
+    file_name = tmp_path / (f"special_permissions_{short_uid()}")
+    content = f"some_content_{short_uid()}"
+    more_content = f"some_more_content_{short_uid()}"
     permissions = 0o600
 
     save_file(file_name, content, permissions=permissions)
@@ -532,9 +570,9 @@ def test_save_load_file_with_permissions(tmp_path):
 
 
 def test_save_load_file_with_changing_permissions(tmp_path):
-    file_name = tmp_path / ("changing_permissions_%s" % short_uid())
-    content = "some_content_%s" % short_uid()
-    more_content = "some_more_content_%s" % short_uid()
+    file_name = tmp_path / (f"changing_permissions_{short_uid()}")
+    content = f"some_content_{short_uid()}"
+    more_content = f"some_more_content_{short_uid()}"
     permissions = 0o600
 
     save_file(file_name, content)

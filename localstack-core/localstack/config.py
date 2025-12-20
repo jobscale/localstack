@@ -10,7 +10,7 @@ import time
 import warnings
 from collections import defaultdict
 from collections.abc import Mapping
-from typing import Any, Optional, TypeVar, Union
+from typing import Any, TypeVar
 
 from localstack import constants
 from localstack.constants import (
@@ -19,6 +19,7 @@ from localstack.constants import (
     DEFAULT_VOLUME_DIR,
     ENV_INTERNAL_TEST_COLLECT_METRIC,
     ENV_INTERNAL_TEST_RUN,
+    ENV_INTERNAL_TEST_STORE_METRICS_IN_LOCALSTACK,
     FALSE_STRINGS,
     LOCALHOST,
     LOCALHOST_IP,
@@ -208,13 +209,13 @@ class Directories:
         return str(self.__dict__)
 
 
-def eval_log_type(env_var_name: str) -> Union[str, bool]:
+def eval_log_type(env_var_name: str) -> str | bool:
     """Get the log type from environment variable"""
     ls_log = os.environ.get(env_var_name, "").lower().strip()
     return ls_log if ls_log in LOG_LEVELS else False
 
 
-def parse_boolean_env(env_var_name: str) -> Optional[bool]:
+def parse_boolean_env(env_var_name: str) -> bool | None:
     """Parse the value of the given env variable and return True/False, or None if it is not a boolean value."""
     value = os.environ.get(env_var_name, "").lower().strip()
     if value in TRUE_STRINGS:
@@ -222,6 +223,11 @@ def parse_boolean_env(env_var_name: str) -> Optional[bool]:
     if value in FALSE_STRINGS:
         return False
     return None
+
+
+def parse_comma_separated_list(env_var_name: str) -> list[str]:
+    """Parse a comma separated list from the given environment variable."""
+    return os.environ.get(env_var_name, "").strip().split(",")
 
 
 def is_env_true(env_var_name: str) -> bool:
@@ -286,7 +292,7 @@ def ping(host):
     """Returns True if the host responds to a ping request"""
     is_in_windows = is_windows()
     ping_opts = "-n 1 -w 2000" if is_in_windows else "-c 1 -W 2"
-    args = "ping %s %s" % (ping_opts, host)
+    args = f"ping {ping_opts} {host}"
     return (
         subprocess.call(
             args, shell=not is_in_windows, stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -435,8 +441,8 @@ TMP_FOLDER = os.path.join(tempfile.gettempdir(), "localstack")
 VOLUME_DIR = os.environ.get("LOCALSTACK_VOLUME_DIR", "").strip() or TMP_FOLDER
 
 # fix for Mac OS, to be able to mount /var/folders in Docker
-if TMP_FOLDER.startswith("/var/folders/") and os.path.exists("/private%s" % TMP_FOLDER):
-    TMP_FOLDER = "/private%s" % TMP_FOLDER
+if TMP_FOLDER.startswith("/var/folders/") and os.path.exists(f"/private{TMP_FOLDER}"):
+    TMP_FOLDER = f"/private{TMP_FOLDER}"
 
 # whether to enable verbose debug logging ("LOG" is used when using the CLI with LOCALSTACK_LOG instead of LS_LOG)
 LS_LOG = eval_log_type("LS_LOG") or eval_log_type("LOG")
@@ -649,7 +655,7 @@ class UniqueHostAndPortList(list[HostAndPort]):
         - Identical identical hosts and ports are de-duped
     """
 
-    def __init__(self, iterable: Union[list[HostAndPort], None] = None):
+    def __init__(self, iterable: list[HostAndPort] | None = None):
         super().__init__(iterable or [])
         self._ensure_unique()
 
@@ -1184,6 +1190,8 @@ elif _override_dynamodb_v2 == "v2":
     os.environ["PROVIDER_OVERRIDE_DYNAMODBSTREAMS"] = "v2"
     DDB_STREAMS_PROVIDER_V2 = True
 
+SNS_PROVIDER_V2 = os.environ.get("PROVIDER_OVERRIDE_SNS", "") == "v2"
+
 # TODO remove fallback to LAMBDA_DOCKER_NETWORK with next minor version
 MAIN_DOCKER_NETWORK = os.environ.get("MAIN_DOCKER_NETWORK", "") or LAMBDA_DOCKER_NETWORK
 
@@ -1207,6 +1215,9 @@ CFN_PER_RESOURCE_TIMEOUT = int(os.environ.get("CFN_PER_RESOURCE_TIMEOUT") or 300
 # By default unsupported resource types will be ignored.
 # EXPERIMENTAL
 CFN_IGNORE_UNSUPPORTED_RESOURCE_TYPES = is_env_not_false("CFN_IGNORE_UNSUPPORTED_RESOURCE_TYPES")
+
+# Decrease the waiting time for resource deployment
+CFN_NO_WAIT_ITERATIONS: str | int | None = os.environ.get("CFN_NO_WAIT_ITERATIONS")
 
 # bind address of local DNS server
 DNS_ADDRESS = os.environ.get("DNS_ADDRESS") or "0.0.0.0"
@@ -1237,8 +1248,8 @@ def use_custom_dns():
 
 
 # s3 virtual host name
-S3_VIRTUAL_HOSTNAME = "s3.%s" % LOCALSTACK_HOST.host
-S3_STATIC_WEBSITE_HOSTNAME = "s3-website.%s" % LOCALSTACK_HOST.host
+S3_VIRTUAL_HOSTNAME = f"s3.{LOCALSTACK_HOST.host}"
+S3_STATIC_WEBSITE_HOSTNAME = f"s3-website.{LOCALSTACK_HOST.host}"
 
 BOTO_WAITER_DELAY = int(os.environ.get("BOTO_WAITER_DELAY") or "1")
 BOTO_WAITER_MAX_ATTEMPTS = int(os.environ.get("BOTO_WAITER_MAX_ATTEMPTS") or "120")
@@ -1257,7 +1268,6 @@ IN_MEMORY_CLIENT = is_env_true("IN_MEMORY_CLIENT")
 LOCALSTACK_RESPONSE_HEADER_ENABLED = is_env_not_false("LOCALSTACK_RESPONSE_HEADER_ENABLED")
 
 # Serialization backend for the LocalStack internal state (`dill` is used by default`).
-# `jsonpickle` enables the new experimental backend.
 STATE_SERIALIZATION_BACKEND = os.environ.get("STATE_SERIALIZATION_BACKEND", "").strip() or "dill"
 
 # List of environment variable names used for configuration that are passed from the host into the LocalStack container.
@@ -1450,6 +1460,11 @@ def is_collect_metrics_mode() -> bool:
     return is_env_true(ENV_INTERNAL_TEST_COLLECT_METRIC)
 
 
+def store_test_metrics_in_local_filesystem() -> bool:
+    """Returns True if test metrics should be stored in the local filesystem (instead of the system that runs pytest)."""
+    return is_env_true(ENV_INTERNAL_TEST_STORE_METRICS_IN_LOCALSTACK)
+
+
 def collect_config_items() -> list[tuple[str, Any]]:
     """Returns a list of key-value tuples of LocalStack configuration values."""
     none = object()  # sentinel object
@@ -1502,10 +1517,10 @@ def get_protocol() -> str:
 
 
 def external_service_url(
-    host: Optional[str] = None,
-    port: Optional[int] = None,
-    protocol: Optional[str] = None,
-    subdomains: Optional[str] = None,
+    host: str | None = None,
+    port: int | None = None,
+    protocol: str | None = None,
+    subdomains: str | None = None,
 ) -> str:
     """Returns a service URL (e.g., SQS queue URL) to an external client (e.g., boto3) potentially running on another
     machine than LocalStack. The configurations LOCALSTACK_HOST and USE_SSL can customize these returned URLs.
@@ -1522,10 +1537,10 @@ def external_service_url(
 
 
 def internal_service_url(
-    host: Optional[str] = None,
-    port: Optional[int] = None,
-    protocol: Optional[str] = None,
-    subdomains: Optional[str] = None,
+    host: str | None = None,
+    port: int | None = None,
+    protocol: str | None = None,
+    subdomains: str | None = None,
 ) -> str:
     """Returns a service URL for internal use within LocalStack (i.e., same host).
     The configuration USE_SSL can customize these returned URLs but LOCALSTACK_HOST has no effect.

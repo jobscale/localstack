@@ -7,10 +7,15 @@ from localstack.utils.analytics import log
 
 LOG = logging.getLogger(__name__)
 
+# Config options for which both usage and values are reported in analytics.
+# Important: This list must only contain options whose values do not contain PII or sensitive data.
 TRACKED_ENV_VAR = [
     "ACTIVATE_PRO",
     "ALLOW_NONSTANDARD_REGIONS",
     "BEDROCK_PREWARM",
+    "CFN_IGNORE_UNSUPPORTED_TYPE_CREATE",
+    "CFN_IGNORE_UNSUPPORTED_TYPE_UPDATE",
+    "CFN_IGNORE_UNSUPPORTED_RESOURCE_TYPES",
     "CLOUDFRONT_LAMBDA_EDGE",
     "CONTAINER_RUNTIME",
     "DEBUG",
@@ -25,6 +30,7 @@ TRACKED_ENV_VAR = [
     "DYNAMODB_IN_MEMORY",
     "DYNAMODB_REMOVE_EXPIRED_ITEMS",
     "EAGER_SERVICE_LOADING",
+    "EC2_DOCKER_INIT",
     "EC2_VM_MANAGER",
     "ECS_TASK_EXECUTOR",
     "EDGE_PORT",
@@ -53,6 +59,7 @@ TRACKED_ENV_VAR = [
     "LAMBDA_RUNTIME_ENVIRONMENT_TIMEOUT",
     "LEGACY_EDGE_PROXY",  # Not functional; deprecated in 1.0.0, removed in 2.0.0
     "LS_LOG",
+    "LOCALSTACK_K8S_DEPLOYMENT_METHOD",
     "MOCK_UNIMPLEMENTED",  # Not functional; deprecated in 1.3.0, removed in 3.0.0
     "OPENSEARCH_ENDPOINT_STRATEGY",
     "PERSISTENCE",
@@ -69,15 +76,22 @@ TRACKED_ENV_VAR = [
     "USE_SSL",
 ]
 
+# Config options for which only the usage is reported in analytics.
+# Use this for options which may hold sensitive data or PII.
 PRESENCE_ENV_VAR = [
     "DATA_DIR",
     "EDGE_FORWARD_URL",  # Not functional; deprecated in 1.4.0, removed in 3.0.0
+    "EC2_HYPERVISOR_URI",
+    "EC2_REFERENCE_DOMAIN",
+    "EC2_LIBVIRT_NETWORK",
+    "EC2_LIBVIRT_POOL",
     "GATEWAY_LISTEN",
     "HOSTNAME",
     "HOSTNAME_EXTERNAL",
     "HOSTNAME_FROM_LAMBDA",
     "HOST_TMP_FOLDER",  # Not functional; deprecated in 1.0.0, removed in 2.0.0
     "INIT_SCRIPTS_PATH",  # Not functional; deprecated in 1.1.0, removed in 2.0.0
+    "KUBERNETES_SERVICE_HOST",
     "LAMBDA_DEBUG_MODE_CONFIG_PATH",
     "LEGACY_DIRECTORIES",  # Not functional; deprecated in 1.1.0, removed in 2.0.0
     "LEGACY_INIT_DIR",  # Not functional; deprecated in 1.1.0, removed in 2.0.0

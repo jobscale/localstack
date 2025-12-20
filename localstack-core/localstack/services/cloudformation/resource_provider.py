@@ -436,11 +436,11 @@ class ResourceProviderExecutor:
         resource: dict,
         raw_payload: ResourceProviderPayload,
         max_timeout: int = config.CFN_PER_RESOURCE_TIMEOUT,
-        sleep_time: float = 5,
+        sleep_time: float = 1,
     ) -> ProgressEvent[Properties]:
         payload = copy.deepcopy(raw_payload)
 
-        max_iterations = max(ceil(max_timeout / sleep_time), 2)
+        max_iterations = max(ceil(max_timeout / sleep_time), 10)
 
         for current_iteration in range(max_iterations):
             resource_type = get_resource_type({"Type": raw_payload["resourceType"]})
@@ -486,10 +486,11 @@ class ResourceProviderExecutor:
                     payload["requestData"]["resourceProperties"] = event.resource_model
                     resource["Properties"] = event.resource_model
 
-                    if current_iteration == 0:
-                        time.sleep(0)
+                    if current_iteration < config.CFN_NO_WAIT_ITERATIONS:
+                        pass
                     else:
                         time.sleep(sleep_time)
+
                 case OperationStatus.PENDING:
                     # come back to this resource in another iteration
                     return event
@@ -518,10 +519,14 @@ class ResourceProviderExecutor:
                 try:
                     return resource_provider.update(request)
                 except NotImplementedError:
+                    feature_request_url = "https://github.com/localstack/localstack/issues/new?template=feature-request.yml"
                     LOG.warning(
-                        'Unable to update resource type "%s", id "%s"',
+                        'Unable to update resource type "%s", id "%s", '
+                        "the update operation is not implemented for this resource. "
+                        "Please consider submitting a feature request at this URL: %s",
                         request.resource_type,
                         request.logical_resource_id,
+                        feature_request_url,
                     )
                     if request.previous_state is None:
                         # this is an issue with our update detection. We should never be in this state.
@@ -563,6 +568,8 @@ class ResourceProviderExecutor:
     @staticmethod
     def try_load_resource_provider(resource_type: str) -> ResourceProvider | None:
         # TODO: unify namespace of plugins
+        if resource_type and resource_type.startswith("Custom"):
+            resource_type = "AWS::CloudFormation::CustomResource"
 
         # 1. try to load pro resource provider
         # prioritise pro resource providers

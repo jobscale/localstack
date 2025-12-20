@@ -1,14 +1,18 @@
 import copy
 import json
 import os.path
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 import pytest
+from botocore.config import Config
 from botocore.exceptions import ClientError, WaiterError
 from tests.aws.services.cloudformation.api.test_stacks import (
     MINIMAL_TEMPLATE,
 )
 from tests.aws.services.cloudformation.conftest import (
-    skip_if_v1_provider,
+    skip_if_legacy_engine,
     skipped_v2_items,
 )
 
@@ -20,6 +24,7 @@ from localstack.testing.aws.cloudformation_utils import (
 )
 from localstack.testing.aws.util import is_aws_cloud
 from localstack.testing.pytest import markers
+from localstack.testing.pytest.fixtures import DeployResult
 from localstack.utils.strings import short_uid
 from localstack.utils.sync import ShortCircuitWaitException, poll_condition, wait_until
 
@@ -336,7 +341,7 @@ def test_create_change_set_update_nonexisting(aws_client):
         os.path.dirname(__file__), "../../../templates/sns_topic_simple.yaml"
     )
 
-    with pytest.raises(Exception) as ex:
+    with pytest.raises(ClientError) as ex:
         response = aws_client.cloudformation.create_change_set(
             StackName=stack_name,
             ChangeSetName=change_set_name,
@@ -371,14 +376,17 @@ def test_create_change_set_invalid_params(aws_client):
 
 
 @markers.aws.validated
-def test_create_change_set_missing_stackname(aws_client):
+def test_create_change_set_missing_stackname(aws_client_factory):
     """in this case boto doesn't even let us send the request"""
     change_set_name = f"change-set-{short_uid()}"
     template_path = os.path.join(
         os.path.dirname(__file__), "../../../templates/sns_topic_simple.yaml"
     )
-    with pytest.raises(Exception):
-        aws_client.cloudformation.create_change_set(
+
+    # A client with parameter validation enabled would result in a client-side ParamValidationError.
+    cfn_client = aws_client_factory(config=Config(parameter_validation=False)).cloudformation
+    with pytest.raises(ClientError):
+        cfn_client.create_change_set(
             StackName="",
             ChangeSetName=change_set_name,
             TemplateBody=load_template_raw(template_path),
@@ -476,6 +484,46 @@ def test_describe_change_set_nonexisting(snapshot, aws_client):
             StackName="somestack", ChangeSetName="DoesNotExist"
         )
     snapshot.match("exception", ex.value)
+
+
+@skip_if_legacy_engine()
+@markers.aws.validated
+def test_create_change_set_no_changes(
+    snapshot,
+    aws_client: ServiceLevelClientFactory,
+    deploy_cfn_template: Callable[..., DeployResult],
+):
+    snapshot.add_transformer(snapshot.transform.cloudformation_api())
+
+    template_path = os.path.join(
+        os.path.dirname(__file__), "../../../templates/simple_no_change.yaml"
+    )
+    with open(template_path) as infile:
+        template_body = infile.read()
+
+    stack = deploy_cfn_template(
+        template_path=template_path,
+    )
+
+    change_set_name = f"cs-{short_uid()}"
+    change_set_result = aws_client.cloudformation.create_change_set(
+        ChangeSetName=change_set_name,
+        StackName=stack.stack_id,
+        ChangeSetType="UPDATE",
+        TemplateBody=template_body,
+    )
+    change_set_id = change_set_result["Id"]
+    with pytest.raises(WaiterError):
+        aws_client.cloudformation.get_waiter("change_set_create_complete").wait(
+            ChangeSetName=change_set_id,
+        )
+
+    snapshot.match(
+        "change-set-description",
+        aws_client.cloudformation.describe_change_set(
+            ChangeSetName=change_set_id,
+        ),
+    )
 
 
 @pytest.mark.skipif(
@@ -633,7 +681,7 @@ def test_create_and_then_remove_non_supported_resource_change_set(deploy_cfn_tem
     )
 
 
-@skip_if_v1_provider("Unsupported in v1 engine")
+@skip_if_legacy_engine()
 @markers.aws.validated
 def test_create_and_then_update_refreshes_template_metadata(
     aws_client,
@@ -1198,3 +1246,281 @@ def test_describe_change_set_with_similarly_named_stacks(deploy_cfn_template, aw
         )["ChangeSetId"]
         == response["Id"]
     )
+
+
+@dataclass
+class NoValueScenario:
+    name: str
+    template: dict[str, Any]
+    should_fail: bool
+
+
+cases = [
+    NoValueScenario(
+        name="parameter",
+        template={
+            "Parameters": {
+                "AWS::NoValue": {
+                    "Type": "String",
+                    "Default": "foo",
+                },
+            },
+            "Resources": {
+                "MyParameter": {
+                    "Type": "AWS::SSM::Parameter",
+                    "Properties": {
+                        "Type": "String",
+                        "Value": {
+                            "Ref": "AWS::NoValue",
+                        },
+                    },
+                },
+            },
+        },
+        should_fail=True,
+    ),
+    NoValueScenario(
+        name="resource",
+        template={
+            "Resources": {
+                "AWS::NoValue": {
+                    "Type": "AWS::SSM::Parameter",
+                    "Properties": {
+                        "Type": "String",
+                        "Value": short_uid(),
+                    },
+                },
+            },
+        },
+        should_fail=True,
+    ),
+    NoValueScenario(
+        name="condition",
+        template={
+            "Conditions": {
+                "AWS::NoValue": {
+                    "Fn::Equals": [
+                        "a",
+                        "a",
+                    ],
+                },
+            },
+            "Resources": {
+                "MyParameter": {
+                    "Type": "AWS::SSM::Parameter",
+                    "Condition": "AWS::NoValue",
+                    "Properties": {
+                        "Type": "String",
+                        "Value": short_uid(),
+                    },
+                },
+            },
+        },
+        should_fail=False,
+    ),
+]
+
+
+@skip_if_legacy_engine()
+@markers.aws.validated
+@pytest.mark.parametrize(
+    "case",
+    cases,
+    ids=[case.name for case in cases],
+)
+def test_using_pseudoparameters_in_places(aws_client, snapshot, cleanups, case):
+    """
+    Test that AWS pseudoparameters (particularly AWS::NoValue) can
+    only be used in value positions of the template
+    """
+
+    stack_name = f"stack-{short_uid()}"
+    change_set_name = f"change-set-{short_uid()}"
+
+    cleanups.append(
+        lambda: aws_client.cloudformation.delete_change_set(
+            ChangeSetName=change_set_name,
+            StackName=stack_name,
+        )
+    )
+
+    if case.should_fail:
+        with pytest.raises(ClientError) as exc_info:
+            aws_client.cloudformation.create_change_set(
+                ChangeSetName=change_set_name,
+                StackName=stack_name,
+                TemplateBody=json.dumps(case.template),
+                ChangeSetType="CREATE",
+            )
+
+        snapshot.match("error", exc_info.value.response)
+
+    else:
+        aws_client.cloudformation.create_change_set(
+            ChangeSetName=change_set_name,
+            StackName=stack_name,
+            TemplateBody=json.dumps(case.template),
+            ChangeSetType="CREATE",
+        )
+        aws_client.cloudformation.get_waiter("change_set_create_complete").wait(
+            ChangeSetName=change_set_name,
+            StackName=stack_name,
+        )
+
+
+@markers.aws.validated
+@markers.snapshot.skip_snapshot_verify(
+    paths=[
+        "$..Changes..ResourceChange.Details",
+        "$..Changes..ResourceChange.PolicyAction",
+        "$..Changes..ResourceChange.Scope",
+    ]
+)
+@skip_if_legacy_engine()
+def test_describe_changeset_after_delete(aws_client, cleanups, snapshot):
+    """
+    Test the behaviour of deleting a change set after it has been executed
+    """
+    stack_name = f"stack-{short_uid()}"
+    cs_name_1 = f"cs-{short_uid()}"
+    cs_name_2 = f"cs-{short_uid()}"
+    topic_name_1 = f"topic-{short_uid()}"
+    topic_name_2 = f"topic-{short_uid()}"
+
+    snapshot.add_transformer(snapshot.transform.cloudformation_api())
+    snapshot.add_transformers_list(
+        [
+            snapshot.transform.regex(cs_name_1, "<cs-1-name>"),
+            snapshot.transform.regex(cs_name_2, "<cs-2-name>"),
+            snapshot.transform.regex(topic_name_1, "<topic-1-name>"),
+            snapshot.transform.regex(topic_name_2, "<topic-2-name>"),
+        ]
+    )
+
+    cleanups.append(lambda: aws_client.cloudformation.delete_stack(StackName=stack_name))
+
+    template_path = os.path.join(
+        os.path.dirname(__file__), "../../../templates/sns_topic_simple.yaml"
+    )
+    with open(template_path) as infile:
+        template_body = infile.read()
+
+    aws_client.cloudformation.create_change_set(
+        StackName=stack_name,
+        TemplateBody=template_body,
+        ChangeSetName=cs_name_1,
+        ChangeSetType="CREATE",
+        Parameters=[{"ParameterKey": "TopicName", "ParameterValue": topic_name_1}],
+    )
+    aws_client.cloudformation.get_waiter("change_set_create_complete").wait(
+        StackName=stack_name, ChangeSetName=cs_name_1
+    )
+
+    aws_client.cloudformation.execute_change_set(StackName=stack_name, ChangeSetName=cs_name_1)
+    aws_client.cloudformation.get_waiter("stack_create_complete").wait(StackName=stack_name)
+
+    aws_client.cloudformation.delete_change_set(StackName=stack_name, ChangeSetName=cs_name_1)
+    with pytest.raises(ClientError) as exc_info:
+        aws_client.cloudformation.describe_change_set(StackName=stack_name, ChangeSetName=cs_name_1)
+
+    snapshot.match("describe-deleted-cs", exc_info.value.response)
+
+    aws_client.cloudformation.create_change_set(
+        StackName=stack_name,
+        TemplateBody=template_body,
+        ChangeSetName=cs_name_2,
+        ChangeSetType="UPDATE",
+        Parameters=[{"ParameterKey": "TopicName", "ParameterValue": topic_name_2}],
+    )
+    aws_client.cloudformation.get_waiter("change_set_create_complete").wait(
+        StackName=stack_name, ChangeSetName=cs_name_2
+    )
+
+    describe_res = aws_client.cloudformation.describe_change_set(
+        StackName=stack_name, ChangeSetName=cs_name_2
+    )
+
+    snapshot.match("describe-2", describe_res)
+
+
+@markers.aws.validated
+@skip_if_legacy_engine()
+def test_update_change_set_with_aws_novalue_repro(aws_client, cleanups):
+    """
+    Fix a bug with trying to access falsy conditions when updating
+    """
+    stack_name = f"stack-{short_uid()}"
+    create_cs_name = f"cs-create-{short_uid()}"
+    update_cs_name = f"cs-update-{short_uid()}"
+    template_path = os.path.join(os.path.dirname(__file__), "../../../templates/aws_novalue.yml")
+    template_body = load_template_raw(template_path)
+    fallback_bucket = f"my-bucket-{short_uid()}"
+
+    create_resp = aws_client.cloudformation.create_change_set(
+        StackName=stack_name,
+        ChangeSetName=create_cs_name,
+        TemplateBody=template_body,
+        ChangeSetType="CREATE",
+        Parameters=[
+            {"ParameterKey": "SetBucketName", "ParameterValue": "no"},
+            {"ParameterKey": "FallbackBucketName", "ParameterValue": fallback_bucket},
+        ],
+    )
+    create_cs_id = create_resp["Id"]
+    stack_id = create_resp["StackId"]
+
+    cleanups.append(lambda: aws_client.cloudformation.delete_stack(StackName=stack_id))
+
+    aws_client.cloudformation.get_waiter("change_set_create_complete").wait(
+        ChangeSetName=create_cs_id
+    )
+    aws_client.cloudformation.execute_change_set(ChangeSetName=create_cs_id)
+    aws_client.cloudformation.get_waiter("stack_create_complete").wait(StackName=stack_id)
+
+    aws_client.cloudformation.create_change_set(
+        StackName=stack_name,
+        ChangeSetName=update_cs_name,
+        TemplateBody=template_body,
+        ChangeSetType="UPDATE",
+        Parameters=[
+            {"ParameterKey": "SetBucketName", "ParameterValue": "no"},
+            {"ParameterKey": "FallbackBucketName", "ParameterValue": fallback_bucket},
+        ],
+    )
+
+
+@markers.aws.validated
+@skip_if_legacy_engine
+def test_changeset_for_deleted_stack(aws_client, deploy_cfn_template, snapshot):
+    parameter_resource_body = {
+        "Type": "AWS::SSM::Parameter",
+        "Properties": {"Type": "String", "Value": "Test"},
+    }
+    template = json.dumps(
+        {"Resources": {f"Parameter{i}": parameter_resource_body for i in range(5)}}
+    )
+
+    stack = deploy_cfn_template(template=template)
+    aws_client.cloudformation.delete_stack(StackName=stack.stack_id)
+
+    with pytest.raises(ClientError) as in_progress_ex:
+        aws_client.cloudformation.create_change_set(
+            StackName=stack.stack_id,
+            ChangeSetName="test",
+            TemplateBody=template,
+            ChangeSetType="UPDATE",
+        )
+
+    aws_client.cloudformation.get_waiter("stack_delete_complete").wait(StackName=stack.stack_id)
+
+    with pytest.raises(ClientError) as complete_ex:
+        aws_client.cloudformation.create_change_set(
+            StackName=stack.stack_id,
+            ChangeSetName="test",
+            TemplateBody=template,
+            ChangeSetType="UPDATE",
+        )
+
+    snapshot.add_transformer(snapshot.transform.regex(stack.stack_id, "<stack-id>"))
+    snapshot.match("ErrorForInProgress", in_progress_ex.value.response)
+    snapshot.match("ErrorForComplete", complete_ex.value.response)

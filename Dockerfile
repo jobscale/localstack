@@ -1,7 +1,7 @@
 #
 # base: Stage which installs necessary runtime dependencies (OS packages, etc.)
 #
-FROM python:3.11.13-slim-bookworm@sha256:0ce77749ac83174a31d5e107ce0cfa6b28a2fd6b0615e029d9d84b39c48976ee AS base
+FROM python:3.13.11-slim-trixie@sha256:baf66684c5fcafbda38a54b227ee30ec41e40af1e4073edee3a7110a417756ba AS base
 ARG TARGETARCH
 
 # Install runtime OS package dependencies
@@ -14,10 +14,9 @@ RUN --mount=type=cache,target=/var/cache/apt \
         # patch for CVE-2024-45490, CVE-2024-45491, CVE-2024-45492
         apt-get install --only-upgrade libexpat1
 
-# FIXME Node 18 actually shouldn't be necessary in Community, but we assume its presence in lots of tests
 # Install nodejs package from the dist release server. Note: we're installing from dist binaries, and not via
-#  `apt-get`, to avoid installing `python3.9` into the image (which otherwise comes as a dependency of nodejs).
-# See https://github.com/nodejs/docker-node/blob/main/18/bullseye/Dockerfile
+#  `apt-get`, to avoid installing `python3.11` into the image (which otherwise comes as a dependency of nodejs).
+# See https://github.com/nodejs/docker-node/blob/main/22/trixie/Dockerfile
 RUN ARCH= && dpkgArch="$(dpkg --print-architecture)" \
   && case "${dpkgArch##*-}" in \
     amd64) ARCH='x64';; \
@@ -27,7 +26,7 @@ RUN ARCH= && dpkgArch="$(dpkg --print-architecture)" \
   # gpg keys listed at https://github.com/nodejs/node#release-keys
   && set -ex \
   && for key in \
-    C0D6248439F1D5604AAFFB4021D900FFDB233756 \
+    5BE8A3F6C8A5C01D106C0AD820B1A390B168D356 \
     DD792F5973C6DE52C432CBDAC77ABFA00DDBF2B7 \
     CC68F5A3106FF448322E48ED27F5E38D5B0A215F \
     8FCCA13FEF1D0C2E91008E09770F7A9A5AE15600 \
@@ -39,11 +38,11 @@ RUN ARCH= && dpkgArch="$(dpkg --print-architecture)" \
       gpg --batch --keyserver hkps://keys.openpgp.org --recv-keys "$key" || \
       gpg --batch --keyserver keyserver.ubuntu.com --recv-keys "$key" ; \
   done \
-  && curl -LO https://nodejs.org/dist/latest-v18.x/SHASUMS256.txt \
+  && curl -LO https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt \
   && LATEST_VERSION_FILENAME=$(cat SHASUMS256.txt | grep -o "node-v.*-linux-$ARCH" | sort | uniq) \
   && rm SHASUMS256.txt \
-  && curl -fsSLO --compressed "https://nodejs.org/dist/latest-v18.x/$LATEST_VERSION_FILENAME.tar.xz" \
-  && curl -fsSLO --compressed "https://nodejs.org/dist/latest-v18.x/SHASUMS256.txt.asc" \
+  && curl -fsSLO --compressed "https://nodejs.org/dist/latest-v22.x/$LATEST_VERSION_FILENAME.tar.xz" \
+  && curl -fsSLO --compressed "https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt.asc" \
   && gpg --batch --decrypt --output SHASUMS256.txt SHASUMS256.txt.asc \
   && grep " $LATEST_VERSION_FILENAME.tar.xz\$" SHASUMS256.txt | sha256sum -c - \
   && tar -xJf "$LATEST_VERSION_FILENAME.tar.xz" -C /usr/local --strip-components=1 --no-same-owner \
@@ -162,9 +161,9 @@ RUN --mount=type=cache,target=/root/.cache \
     chmod -R 777 /usr/lib/localstack
 
 # link the python package installer virtual environments into the localstack venv
-RUN echo /var/lib/localstack/lib/python-packages/lib/python3.11/site-packages > localstack-var-python-packages-venv.pth && \
+RUN echo /var/lib/localstack/lib/python-packages/lib/python3.13/site-packages > localstack-var-python-packages-venv.pth && \
     mv localstack-var-python-packages-venv.pth .venv/lib/python*/site-packages/
-RUN echo /usr/lib/localstack/python-packages/lib/python3.11/site-packages > localstack-static-python-packages-venv.pth && \
+RUN echo /usr/lib/localstack/python-packages/lib/python3.13/site-packages > localstack-static-python-packages-venv.pth && \
     mv localstack-static-python-packages-venv.pth .venv/lib/python*/site-packages/
 
 # expose edge service, external service ports, and debugpy

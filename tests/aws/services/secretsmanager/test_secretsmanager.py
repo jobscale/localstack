@@ -1916,6 +1916,9 @@ class TestSecretsManager:
         )
 
     @markers.aws.only_localstack  # FIXME: all tests using the internal http utils of this class are only targeting localstack
+    @pytest.mark.skip(
+        "Test is not AWS validated and deviates from Moto behaviour. See https://github.com/getmoto/moto/pull/9192"
+    )
     def test_http_put_secret_value_with_duplicate_client_request_token(
         self, secret_name, aws_client
     ):
@@ -2532,6 +2535,7 @@ class TestSecretsManager:
         )
         sm_snapshot.match("secret_value_http_response", json_response)
 
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_create_secret_with_custom_id(
         self, account_id, region_name, create_secret, set_resource_custom_id

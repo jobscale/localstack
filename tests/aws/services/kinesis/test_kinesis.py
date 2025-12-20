@@ -24,6 +24,7 @@ from localstack.services.kinesis import provider as kinesis_provider
 from localstack.testing.aws.util import is_aws_cloud
 from localstack.testing.pytest import markers
 from localstack.utils.aws import resources
+from localstack.utils.aws.arns import kinesis_stream_arn
 from localstack.utils.common import retry, select_attributes, short_uid
 from localstack.utils.files import load_file
 from localstack.utils.kinesis import kinesis_connector
@@ -134,6 +135,95 @@ class TestKinesis:
         snapshot.match("Shards", shards)
 
     @markers.aws.validated
+    def test_resource_policy_crud(
+        self,
+        account_id,
+        kinesis_create_stream,
+        wait_for_stream_ready,
+        aws_client,
+        snapshot,
+    ):
+        """Test complete CRUD cycle for Kinesis resource policies"""
+
+        stream_name = kinesis_create_stream()
+        wait_for_stream_ready(stream_name)
+        describe_stream = aws_client.kinesis.describe_stream(StreamName=stream_name)
+        resource_arn = describe_stream["StreamDescription"]["StreamARN"]
+        principal_arn = f"arn:aws:iam::{account_id}:root"
+
+        # retrieve, no policy yet
+        resp = aws_client.kinesis.get_resource_policy(ResourceARN=resource_arn)
+        snapshot.match("default_policy_if_not_set", resp)
+
+        # put
+        policy = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": "AllowCrossAccountWrite",
+                    "Effect": "Allow",
+                    "Principal": {"AWS": principal_arn},
+                    "Action": "kinesis:PutRecord",
+                    "Resource": resource_arn,
+                }
+            ],
+        }
+        resp = aws_client.kinesis.put_resource_policy(
+            ResourceARN=resource_arn, Policy=json.dumps(policy)
+        )
+        snapshot.match("put_resource_policy_if_not_set", resp)
+
+        # retrieve
+        resp = aws_client.kinesis.get_resource_policy(ResourceARN=resource_arn)
+        snapshot.match("get_resource_policy_after_set", resp)
+
+        # update
+        updated_policy = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": "AllowCrossAccountReadWrite",
+                    "Effect": "Allow",
+                    "Principal": {"AWS": principal_arn},
+                    "Action": ["kinesis:PutRecord", "kinesis:GetRecords"],
+                    "Resource": resource_arn,
+                }
+            ],
+        }
+        resp = aws_client.kinesis.put_resource_policy(
+            ResourceARN=resource_arn, Policy=json.dumps(updated_policy)
+        )
+        snapshot.match("update_resource_policy", resp)
+
+        # get the right policy after updating
+        resp = aws_client.kinesis.get_resource_policy(ResourceARN=resource_arn)
+        snapshot.match("get_resource_policy_after_update", resp)
+
+        # delete it
+        resp = aws_client.kinesis.delete_resource_policy(ResourceARN=resource_arn)
+        snapshot.match("delete_resource_policy", resp)
+
+        # get, policy should no longer exist
+        resp = aws_client.kinesis.get_resource_policy(ResourceARN=resource_arn)
+        snapshot.match("get_resource_policy_after_delete", resp)
+
+        # deleting non existent policy for a valid arn
+        with pytest.raises(ClientError):
+            aws_client.kinesis.delete_resource_policy(ResourceARN=resource_arn)
+
+        # put a policy for a non-existent stream
+        not_existent_arn = "arn:aws:kinesis:us-east-1:000000000000:stream/non-existent-xxxxxx"
+        policy["Statement"][0]["Resource"] = not_existent_arn
+        with pytest.raises(ClientError):
+            aws_client.kinesis.put_resource_policy(
+                ResourceARN=not_existent_arn, Policy=json.dumps(policy)
+            )
+
+        # TODO put a policy for an invalid stream arn, but it behaves differently
+        # on localstack and AWS, as the later triggers end-point-resolution in botocore
+        # and fails client side
+
+    @markers.aws.validated
     def test_stream_consumers(
         self,
         kinesis_create_stream,
@@ -175,7 +265,15 @@ class TestKinesis:
         snapshot.match("One_consumer_by_describe_stream", consumer_description_by_arn)
 
     @markers.aws.validated
-    @markers.snapshot.skip_snapshot_verify(paths=["$..Records..EncryptionType"])
+    @markers.snapshot.skip_snapshot_verify(
+        paths=[
+            "$..Events..EncryptionType",
+            # TODO: We set this to the final sequence_number of returned records which is technically not correct,
+            # but will suffice as a checkpoint for now. See AWS docs:
+            # https://docs.aws.amazon.com/kinesis/latest/APIReference/API_SubscribeToShardEvent.html#API_SubscribeToShardEvent_Contents
+            "$..Events..ContinuationSequenceNumber",
+        ]
+    )
     def test_subscribe_to_shard(
         self,
         kinesis_create_stream,
@@ -210,21 +308,26 @@ class TestKinesis:
         # put records
         num_records = 5
         msg = "Hello world"
-        for i in range(num_records):
-            aws_client.kinesis.put_records(
-                StreamName=stream_name, Records=[{"Data": f"{msg}_{i}", "PartitionKey": "1"}]
-            )
+        aws_client.kinesis.put_records(
+            StreamName=stream_name,
+            Records=[{"Data": f"{msg}_{i}", "PartitionKey": "1"} for i in range(num_records)],
+        )
 
         # read out results
         results = []
         for entry in stream:
-            records = entry["SubscribeToShardEvent"]["Records"]
-            results.extend(records)
-            if len(results) >= num_records:
+            event = entry["SubscribeToShardEvent"]
+            records = event.get("Records", [])
+
+            if not records:
+                continue
+
+            results.append(event)
+            num_records -= len(records)
+            if num_records <= 0:
                 break
 
-        results.sort(key=lambda k: k.get("Data"))
-        snapshot.match("Records", results)
+        snapshot.match("Events", results)
 
     @markers.aws.validated
     @markers.snapshot.skip_snapshot_verify(paths=["$..Records..EncryptionType"])
@@ -710,6 +813,36 @@ class TestKinesis:
         record = retry(_get_record, sleep=1, retries=5)
         assert record["Data"].decode("utf-8") == test_data
 
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        # error message is wrong in Kinesis (returns the full ARN)
+        paths=["$..message"],
+    )
+    def test_cbor_exceptions(
+        self,
+        kinesis_create_stream,
+        wait_for_stream_ready,
+        aws_client,
+        kinesis_http_client,
+        region_name,
+        account_id,
+        snapshot,
+    ):
+        fake_name = "wrong-stream-name"
+        fake_stream_arn = kinesis_stream_arn(
+            account_id=account_id, region_name=region_name, stream_name=fake_name
+        )
+        describe_response_raw = kinesis_http_client.post_raw(
+            operation="DescribeStream",
+            payload={"StreamARN": fake_stream_arn},
+        )
+        assert describe_response_raw.status_code == 400
+        cbor_content = describe_response_raw.content
+        describe_response_data = cbor2_loads(cbor_content)
+        snapshot.match("cbor-error", describe_response_data)
+        assert describe_response_data["__type"] == "ResourceNotFoundException"
+        # TODO: add manual assertion on CBOR body?
+
 
 class TestKinesisJavaSDK:
     # the lambda function is stored in the lambda common functions folder to re-use existing caching in CI
@@ -807,7 +940,7 @@ class TestKinesisPythonClient:
             num_events_kinesis = 10
             kinesis.put_records(
                 Records=[
-                    {"Data": "{}", "PartitionKey": "test_%s" % i}
+                    {"Data": "{}", "PartitionKey": f"test_{i}"}
                     for i in range(0, num_events_kinesis)
                 ],
                 StreamName=stream_name,

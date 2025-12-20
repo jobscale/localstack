@@ -1,16 +1,18 @@
 import copy
 import json
+import os
 
 import pytest
+from botocore.exceptions import WaiterError
 from localstack_snapshot.snapshots.transformer import RegexTransformer
-from tests.aws.services.cloudformation.conftest import skip_if_v1_provider
+from tests.aws.services.cloudformation.conftest import skip_if_legacy_engine
 
 from localstack.aws.connect import ServiceLevelClientFactory
 from localstack.testing.pytest import markers
 from localstack.utils.strings import short_uid
 
 
-@skip_if_v1_provider("Requires the V2 engine")
+@skip_if_legacy_engine()
 @markers.snapshot.skip_snapshot_verify(
     paths=[
         "delete-describe..*",
@@ -779,8 +781,57 @@ class TestCaptureUpdateProcess:
         parameter = aws_client.ssm.get_parameter(Name=parameter_name)["Parameter"]
         snapshot.match("parameter-2", parameter)
 
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(paths=["$..PhysicalResourceId"])
+    def test_queue_update(
+        self, aws_client, deploy_cfn_template, capture_per_resource_events, snapshot
+    ):
+        """
+        A test where one of the templates creates a resource without any specified properties. We
+        make sure the second operation on that resource is an UPDATE not CREATE.
+        """
+        snapshot.add_transformer(snapshot.transform.cloudformation_api())
 
-@skip_if_v1_provider("Not supported with v1 engine")
+        template1 = os.path.join(
+            os.path.dirname(__file__), "../../templates/sqs_queue_update_1.yaml"
+        )
+        template2 = os.path.join(
+            os.path.dirname(__file__), "../../templates/sqs_queue_update_2.yaml"
+        )
+
+        # Deploy order:
+        # - 1
+        # - 2
+        # - 1
+
+        stack = deploy_cfn_template(template_path=template1)
+        outputs = stack.outputs
+
+        queue_url = outputs["QueueUrl"]
+
+        queue_attributes = aws_client.sqs.get_queue_attributes(
+            QueueUrl=queue_url, AttributeNames=["All"]
+        )
+        snapshot.match("queue-attributes-1", queue_attributes)
+
+        deploy_cfn_template(template_path=template2, is_update=True, stack_name=stack.stack_id)
+        queue_attributes = aws_client.sqs.get_queue_attributes(
+            QueueUrl=queue_url, AttributeNames=["All"]
+        )
+        snapshot.match("queue-attributes-2", queue_attributes)
+
+        deploy_cfn_template(template_path=template1, is_update=True, stack_name=stack.stack_id)
+        queue_attributes = aws_client.sqs.get_queue_attributes(
+            QueueUrl=queue_url, AttributeNames=["All"]
+        )
+        snapshot.match("queue-attributes-3", queue_attributes)
+
+        per_resource_events = capture_per_resource_events(stack.stack_id)
+
+        snapshot.match("events", per_resource_events["StandardQueue"])
+
+
+@skip_if_legacy_engine()
 @markers.aws.validated
 @markers.snapshot.skip_snapshot_verify(
     paths=[
@@ -858,7 +909,7 @@ def test_dynamic_ssm_parameter_lookup(
     )
 
 
-@skip_if_v1_provider("Not supported with v1 engine")
+@skip_if_legacy_engine()
 @markers.aws.validated
 @markers.snapshot.skip_snapshot_verify(
     paths=[
@@ -936,3 +987,101 @@ def test_dynamic_ssm_parameter_lookup_no_change(
         p1={"InputValue": parameter_name},
         p2={"InputValue": parameter_name},
     )
+
+
+@skip_if_legacy_engine()
+@markers.aws.validated
+@markers.snapshot.skip_snapshot_verify(paths=["$..StatusReason"])
+def test_describe_failed_change_set(aws_client: ServiceLevelClientFactory, snapshot, cleanups):
+    snapshot.add_transformer(snapshot.transform.cloudformation_api())
+
+    template = {
+        "Resources": {
+            "MyFoo": {
+                "Type": "AWS::SSM::Parameter",
+                "Properties": {
+                    "Fn::Transform": {
+                        "Name": "AWS::Include",
+                        "Parameters": {
+                            "Location": "s3://doesnotexist/key.yml",
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    stack_name = f"cs-{short_uid()}"
+    change_set_name = f"cs-{short_uid()}"
+    res = aws_client.cloudformation.create_change_set(
+        StackName=stack_name,
+        ChangeSetName=change_set_name,
+        ChangeSetType="CREATE",
+        TemplateBody=json.dumps(template),
+    )
+
+    cleanups.append(lambda: aws_client.cloudformation.delete_stack(StackName=res["StackId"]))
+
+    with pytest.raises(WaiterError):
+        aws_client.cloudformation.get_waiter("change_set_create_complete").wait(
+            ChangeSetName=res["Id"]
+        )
+
+    describe = aws_client.cloudformation.describe_change_set(ChangeSetName=res["Id"])
+    snapshot.match("describe", describe)
+
+
+@skip_if_legacy_engine()
+@markers.aws.validated
+def test_list_change_sets(deploy_cfn_template, aws_client, snapshot):
+    snapshot.add_transformer(snapshot.transform.cloudformation_api())
+    template = {
+        "Resources": {
+            "MyParameter": {
+                "Type": "AWS::SSM::Parameter",
+                "Properties": {
+                    "Type": "String",
+                    "Value": short_uid(),
+                },
+            },
+        },
+    }
+
+    # first create an executed change set
+    stack = deploy_cfn_template(template=json.dumps(template))
+    stack_id = stack.stack_id
+
+    # now create a non-executed change set
+    template2 = copy.deepcopy(template)
+    template2["Resources"]["MyParameter"]["Properties"]["Value"] = short_uid()
+
+    non_executed_change_set_name = f"cs-{short_uid()}"
+    non_executed_change_set_id = aws_client.cloudformation.create_change_set(
+        ChangeSetName=non_executed_change_set_name,
+        StackName=stack.stack_id,
+        ChangeSetType="UPDATE",
+        TemplateBody=json.dumps(template2),
+    )["Id"]
+    aws_client.cloudformation.get_waiter("change_set_create_complete").wait(
+        ChangeSetName=non_executed_change_set_id
+    )
+
+    # now create and delete a change set
+    template3 = copy.deepcopy(template)
+    template3["Resources"]["MyParameter"]["Properties"]["Value"] = short_uid()
+
+    deleted_change_set_name = f"cs-{short_uid()}"
+    deleted_change_set_id = aws_client.cloudformation.create_change_set(
+        ChangeSetName=deleted_change_set_name,
+        StackName=stack.stack_id,
+        ChangeSetType="UPDATE",
+        TemplateBody=json.dumps(template3),
+    )["Id"]
+    aws_client.cloudformation.get_waiter("change_set_create_complete").wait(
+        ChangeSetName=deleted_change_set_id
+    )
+
+    aws_client.cloudformation.delete_change_set(ChangeSetName=deleted_change_set_id)
+
+    change_sets = aws_client.cloudformation.list_change_sets(StackName=stack_id)
+    snapshot.match("change-sets", change_sets)

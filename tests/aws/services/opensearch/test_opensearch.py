@@ -15,6 +15,8 @@ from opensearchpy.exceptions import AuthorizationException
 from localstack import config
 from localstack.aws.api.opensearch import (
     AdvancedSecurityOptionsInput,
+    AutoTuneDesiredState,
+    AutoTuneState,
     ClusterConfig,
     DomainEndpointOptions,
     EBSOptions,
@@ -23,11 +25,6 @@ from localstack.aws.api.opensearch import (
     NodeToNodeEncryptionOptions,
     OpenSearchPartitionInstanceType,
     VolumeType,
-)
-from localstack.constants import (
-    ELASTICSEARCH_DEFAULT_VERSION,
-    OPENSEARCH_DEFAULT_VERSION,
-    OPENSEARCH_PLUGIN_LIST,
 )
 from localstack.services.opensearch import provider
 from localstack.services.opensearch.cluster import CustomEndpoint, EdgeProxiedOpensearchCluster
@@ -39,7 +36,12 @@ from localstack.services.opensearch.cluster_manager import (
     SingletonClusterManager,
     create_cluster_manager,
 )
-from localstack.services.opensearch.packages import opensearch_package
+from localstack.services.opensearch.packages import (
+    ELASTICSEARCH_DEFAULT_VERSION,
+    OPENSEARCH_DEFAULT_VERSION,
+    OPENSEARCH_PLUGIN_LIST,
+    opensearch_package,
+)
 from localstack.testing.aws.util import is_aws_cloud
 from localstack.testing.pytest import markers
 from localstack.utils.common import call_safe, poll_condition, retry, short_uid, start_worker_thread
@@ -97,6 +99,21 @@ def try_cluster_health(cluster_url: str):
         "yellow",
         "green",
     ], "expected cluster state to be in a valid state"
+
+
+@pytest.fixture(autouse=True)
+def disable_ssl_validation_for_unsupported_regions(region_name, monkeypatch):
+    # list of regions supported in our certificate
+    # prevents SSL verification for regional hostnames not present in the SAN list of the certificate
+    if region_name not in {
+        "eu-central-1",
+        "eu-west-1",
+        "us-east-1",
+        "us-east-2",
+        "us-west-1",
+        "us-west-2",
+    }:
+        monkeypatch.setattr(requests, "verify_ssl", False)
 
 
 @markers.skip_offline
@@ -179,6 +196,7 @@ class TestOpensearchProvider:
             "$..SnapshotOptions.Options.AutomatedSnapshotStartHour",
             "$..SnapshotOptions.Status.UpdateVersion",
             "$..SoftwareUpdateOptions",
+            "$..Status.UpdateVersion",
             "$..VPCOptions.Status.UpdateVersion",
         ]
     )
@@ -259,7 +277,11 @@ class TestOpensearchProvider:
             plugins_response = http_client.get(plugins_url, headers={"Accept": "application/json"})
         else:
             # TODO fix ssl validation error when using the signed request for the elastic search domain
-            plugins_response = requests.get(plugins_url, headers={"Accept": "application/json"})
+            plugins_response = requests.get(
+                plugins_url,
+                headers={"Accept": "application/json"},
+                verify=False,
+            )
 
         installed_plugins = {plugin["component"] for plugin in plugins_response.json()}
         requested_plugins = set(OPENSEARCH_PLUGIN_LIST)
@@ -267,6 +289,59 @@ class TestOpensearchProvider:
 
         delete_response = aws_client.opensearch.delete_domain(DomainName=domain_name)
         snapshot.match("delete-response", delete_response["DomainStatus"])
+
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        paths=[
+            "$..Status.UpdateVersion",
+        ]
+    )
+    def test_autotune_state_transitions(self, opensearch_create_domain, aws_client, snapshot):
+        domain_name = opensearch_create_domain(
+            AutoTuneOptions={"DesiredState": AutoTuneDesiredState.ENABLED},
+            ClusterConfig={
+                "InstanceType": "m5.large.search",
+                "InstanceCount": 1,
+            },
+            EBSOptions={
+                "EBSEnabled": True,
+                "VolumeType": "gp2",
+                "VolumeSize": 10,
+            },
+        )
+
+        timeout = 25 * 60 if is_aws_cloud() else 2 * 60
+        interval = 10 if is_aws_cloud() else 0.5
+
+        def wait_for_autotune_state(expected_state: AutoTuneState) -> dict:
+            def _state_matches():
+                status = aws_client.opensearch.describe_domain(DomainName=domain_name)
+                autotune = status["DomainStatus"].get("AutoTuneOptions") or {}
+                return autotune.get("State") == expected_state
+
+            assert poll_condition(_state_matches, timeout=timeout, interval=interval)
+            final_status = aws_client.opensearch.describe_domain(DomainName=domain_name)
+            return final_status["DomainStatus"].get("AutoTuneOptions") or {}
+
+        enabled_status = wait_for_autotune_state(AutoTuneState.ENABLED)
+        snapshot.match("autotune_enabled_status", enabled_status)
+
+        aws_client.opensearch.update_domain_config(
+            DomainName=domain_name, AutoTuneOptions={"DesiredState": AutoTuneDesiredState.DISABLED}
+        )
+
+        disabled_status = wait_for_autotune_state(AutoTuneState.DISABLED)
+        snapshot.match("autotune_disabled_status", disabled_status)
+
+        def _config_matches():
+            config = aws_client.opensearch.describe_domain_config(DomainName=domain_name)
+            options = (config["DomainConfig"].get("AutoTuneOptions") or {}).get("Options") or {}
+            return options.get("DesiredState") == AutoTuneDesiredState.DISABLED
+
+        assert poll_condition(_config_matches, timeout=timeout, interval=interval)
+        final_config = aws_client.opensearch.describe_domain_config(DomainName=domain_name)
+        config_autotune = final_config["DomainConfig"].get("AutoTuneOptions") or {}
+        snapshot.match("autotune_domain_config", config_autotune)
 
     @markers.aws.only_localstack
     def test_security_plugin(self, opensearch_create_domain, aws_client):
@@ -636,6 +711,7 @@ class TestOpensearchProvider:
             f"search unsuccessful({response.status_code}): {response.text}"
         )
 
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_endpoint_strategy_path(self, monkeypatch, opensearch_create_domain, aws_client):
         monkeypatch.setattr(config, "OPENSEARCH_ENDPOINT_STRATEGY", "path")
@@ -649,6 +725,7 @@ class TestOpensearchProvider:
         endpoint = status["Endpoint"]
         assert endpoint.endswith(f"/{domain_name}")
 
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_endpoint_strategy_port(self, monkeypatch, opensearch_create_domain, aws_client):
         monkeypatch.setattr(config, "OPENSEARCH_ENDPOINT_STRATEGY", "port")
@@ -684,6 +761,7 @@ class TestOpensearchProvider:
 
 @markers.skip_offline
 class TestEdgeProxiedOpensearchCluster:
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_route_through_edge(self):
         cluster_id = f"domain-{short_uid()}"
@@ -697,7 +775,6 @@ class TestEdgeProxiedOpensearchCluster:
 
             response = requests.get(cluster_url)
             assert response.ok, f"cluster endpoint returned an error: {response.text}"
-            assert response.json()["version"]["number"] == "2.11.1"
 
             response = requests.get(f"{cluster_url}/_cluster/health")
             assert response.ok, f"cluster health endpoint returned an error: {response.text}"
@@ -781,6 +858,7 @@ class TestEdgeProxiedOpensearchCluster:
 
 @markers.skip_offline
 class TestMultiClusterManager:
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_multi_cluster(self, account_id, monkeypatch):
         monkeypatch.setattr(config, "OPENSEARCH_ENDPOINT_STRATEGY", "domain")
@@ -829,6 +907,7 @@ class TestMultiClusterManager:
 
 @markers.skip_offline
 class TestMultiplexingClusterManager:
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_multiplexing_cluster(self, account_id, monkeypatch):
         monkeypatch.setattr(config, "OPENSEARCH_ENDPOINT_STRATEGY", "domain")
@@ -877,6 +956,7 @@ class TestMultiplexingClusterManager:
 
 @markers.skip_offline
 class TestSingletonClusterManager:
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_endpoint_strategy_port_singleton_cluster(self, account_id, monkeypatch):
         monkeypatch.setattr(config, "OPENSEARCH_ENDPOINT_STRATEGY", "port")
@@ -923,6 +1003,7 @@ class TestSingletonClusterManager:
 
 @markers.skip_offline
 class TestCustomBackendManager:
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_custom_backend(self, account_id, httpserver, monkeypatch):
         monkeypatch.setattr(config, "OPENSEARCH_ENDPOINT_STRATEGY", "domain")
@@ -989,6 +1070,7 @@ class TestCustomBackendManager:
 
         httpserver.check()
 
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_custom_backend_with_custom_endpoint(
         self,

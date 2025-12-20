@@ -89,9 +89,9 @@ class ShellScriptRunner(ScriptRunner):
     suffixes = [".sh"]
 
     def run(self, path: str) -> None:
-        exit_code = subprocess.call(args=[], executable=path)
+        exit_code = subprocess.call(args=[path])
         if exit_code != 0:
-            raise OSError("Script %s returned a non-zero exit code %s" % (path, exit_code))
+            raise OSError(f"Script {path} returned a non-zero exit code {exit_code}")
 
 
 class PythonScriptRunner(ScriptRunner):

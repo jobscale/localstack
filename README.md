@@ -1,9 +1,9 @@
 <p align="center">
-:zap: We are thrilled to announce the release of <a href="https://blog.localstack.cloud/localstack-for-aws-release-v-4-7-0/">LocalStack 4.7</a> :zap:
+:zap: We are thrilled to announce the release of <a href="https://blog.localstack.cloud/localstack-for-aws-release-v-4-11-0/">LocalStack 4.11</a> :zap:
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/localstack/localstack/main/docs/localstack-readme-banner.svg" alt="LocalStack - A fully functional local cloud stack">
+  <img src="docs/localstack-readme-banner.svg" alt="LocalStack - The Leading Platform for Local Cloud Development">
 </p>
 
 <p align="center">
@@ -93,7 +93,7 @@ Start LocalStack inside a Docker container by running:
   / /___/ /_/ / /__/ /_/ / /___/ / /_/ /_/ / /__/ ,<
  /_____/\____/\___/\__,_/_//____/\__/\__,_/\___/_/|_|
 
-- LocalStack CLI: 4.7.0
+- LocalStack CLI: 4.9.0
 - Profile: default
 - App: https://app.localstack.cloud
 
@@ -179,7 +179,7 @@ upvote 👍 [feature requests](https://github.com/localstack/localstack/issues?q
 🙋🏽 ask [support questions](https://docs.localstack.cloud/getting-started/help-and-support/),
 or 🗣️ discuss local cloud development:
 
-- [LocalStack Slack Community](https://localstack.cloud/contact/)
+- [LocalStack Slack Community](https://localstack.cloud/slack/)
 - [LocalStack GitHub Issue tracker](https://github.com/localstack/localstack/issues)
 
 ### Contributors

@@ -802,15 +802,14 @@ class TestApiGatewayImportRestApi:
 
             url_error = api_invoke_url(api_id=rest_api_id, stage="v2", path="/path1")
 
-            def call_api_error():
+            def call_api_error() -> requests.Response:
                 res = requests.get(url_error)
                 assert res.status_code == 500
-                return res.json()
+                return res
 
             resp = retry(call_api_error, retries=5, sleep=2)
-            # we remove the headers from the response, not really needed for this test
-            resp.pop("headers", None)
-            snapshot.match("get-error-resp-from-http", resp)
+            error = {"body": resp.json(), "errorType": resp.headers.get("x-amzn-ErrorType")}
+            snapshot.match("get-error-resp-from-http", error)
 
     @markers.aws.validated
     @markers.snapshot.skip_snapshot_verify(
@@ -965,3 +964,28 @@ class TestApiGatewayImportRestApi:
         if is_aws_cloud():
             # waiting before cleaning up to avoid TooManyRequests, as we create multiple REST APIs
             time.sleep(15)
+
+    @markers.aws.validated
+    def test_import_api_bad_file(self, aws_client, import_apigw, apigw_create_rest_api, snapshot):
+        bad_yaml_string = """test:
+    value:
+        - "value ... \"escaped\": $var, \"dt\": $(var +"%a")}\"
+        """
+
+        bad_json_string = "{'key:value}"
+
+        with pytest.raises(ClientError) as e:
+            import_apigw(body=bad_yaml_string)
+        snapshot.match("import-api-bad-yaml-file", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            import_apigw(body=bad_json_string)
+        snapshot.match("import-api-bad-json-file", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.apigateway.put_rest_api(restApiId=short_uid(), body=bad_yaml_string)
+        snapshot.match("put-rest-api-bad-yaml-file", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.apigateway.put_rest_api(restApiId=short_uid(), body=bad_json_string)
+        snapshot.match("put-rest-api-bad-json-file", e.value.response)

@@ -1,4 +1,5 @@
 import base64
+import contextlib
 import copy
 import functools
 import json
@@ -85,6 +86,7 @@ from localstack.utils.aws.arns import (
 from localstack.utils.collections import PaginatedList, select_from_typed_dict
 from localstack.utils.strings import short_uid, to_bytes, to_str
 
+from ...state import StateVisitor
 from .analytics import internal_api_calls
 
 # set up logger
@@ -116,6 +118,10 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
         super().__init__()
         self._publisher = PublishDispatcher()
         self._signature_cert_pem: str = SNS_SERVER_CERT
+
+    def accept_state_visitor(self, visitor: StateVisitor):
+        visitor.visit(sns_backends)
+        visitor.visit(sns_stores)
 
     def on_before_stop(self):
         self._publisher.shutdown()
@@ -419,6 +425,10 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
     def unsubscribe(
         self, context: RequestContext, subscription_arn: subscriptionARN, **kwargs
     ) -> None:
+        if subscription_arn is None:
+            raise InvalidParameterException(
+                "Invalid parameter: SubscriptionArn Reason: no value for required parameter",
+            )
         count = len(subscription_arn.split(":"))
         try:
             parsed_arn = parse_arn(subscription_arn)
@@ -469,7 +479,8 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
                 subscription_arn=subscription_arn,
             )
 
-        store.topic_subscriptions[subscription["TopicArn"]].remove(subscription_arn)
+        with contextlib.suppress(ValueError):
+            store.topic_subscriptions[subscription["TopicArn"]].remove(subscription_arn)
         store.subscription_filter_policy.pop(subscription_arn, None)
         store.subscriptions.pop(subscription_arn, None)
 

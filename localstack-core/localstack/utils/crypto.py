@@ -4,7 +4,13 @@ import os
 import re
 import threading
 
+from asn1crypto import algos, cms, core
+from asn1crypto import x509 as asn1_x509
 from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import padding as sym_padding
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from .files import TMP_FILES, file_exists_not_empty, load_file, new_tmp_file, save_file
@@ -26,6 +32,11 @@ PEM_CERT_END = "-----END CERTIFICATE-----"
 PEM_KEY_START_REGEX = r"-----BEGIN(.*)PRIVATE KEY-----"
 PEM_KEY_END_REGEX = r"-----END(.*)PRIVATE KEY-----"
 
+OID_AES256_CBC = "2.16.840.1.101.3.4.1.42"
+OID_MGF1 = "1.2.840.113549.1.1.8"
+OID_RSAES_OAEP = "1.2.840.113549.1.1.7"
+OID_SHA256 = "2.16.840.1.101.3.4.2.1"
+
 
 @synchronized(lock=SSL_CERT_LOCK)
 def generate_ssl_cert(
@@ -43,8 +54,8 @@ def generate_ssl_cert(
         return all(os.path.exists(f) for f in files)
 
     def store_cert_key_files(base_filename):
-        key_file_name = "%s.key" % base_filename
-        cert_file_name = "%s.crt" % base_filename
+        key_file_name = f"{base_filename}.key"
+        cert_file_name = f"{base_filename}.crt"
         # TODO: Cleaner code to load the cert dynamically
         # extract key and cert from target_file and store into separate files
         content = load_file(target_file)
@@ -74,9 +85,9 @@ def generate_ssl_cert(
             return target_file, cert_file_name, key_file_name
     if random and target_file:
         if "." in target_file:
-            target_file = target_file.replace(".", ".%s." % short_uid(), 1)
+            target_file = target_file.replace(".", f".{short_uid()}.", 1)
         else:
-            target_file = "%s.%s" % (target_file, short_uid())
+            target_file = f"{target_file}.{short_uid()}"
 
     # create a key pair
     k = crypto.PKey()
@@ -123,10 +134,10 @@ def generate_ssl_cert(
     key_file.write(to_str(crypto.dump_privatekey(crypto.FILETYPE_PEM, k)))
     cert_file_content = cert_file.getvalue().strip()
     key_file_content = key_file.getvalue().strip()
-    file_content = "%s\n%s" % (key_file_content, cert_file_content)
+    file_content = f"{key_file_content}\n{cert_file_content}"
     if target_file:
-        key_file_name = "%s.key" % target_file
-        cert_file_name = "%s.crt" % target_file
+        key_file_name = f"{target_file}.key"
+        cert_file_name = f"{target_file}.crt"
         # check existence to avoid permission denied issues:
         # https://github.com/localstack/localstack/issues/1607
         if not all_exist(target_file, key_file_name, cert_file_name):
@@ -145,9 +156,9 @@ def generate_ssl_cert(
                         e,
                     )
                     # Fix for https://github.com/localstack/localstack/issues/1743
-                    target_file = "%s.pem" % new_tmp_file()
-                    key_file_name = "%s.key" % target_file
-                    cert_file_name = "%s.crt" % target_file
+                    target_file = f"{new_tmp_file()}.pem"
+                    key_file_name = f"{target_file}.key"
+                    cert_file_name = f"{target_file}.crt"
             TMP_FILES.append(target_file)
             TMP_FILES.append(key_file_name)
             TMP_FILES.append(cert_file_name)
@@ -183,3 +194,101 @@ def decrypt(
     decrypted = decryptor.update(encrypted) + decryptor.finalize()
     decrypted = unpad(decrypted)
     return decrypted
+
+
+def pkcs7_envelope_encrypt(plaintext: bytes, recipient_pubkey: RSAPublicKey) -> bytes:
+    """
+    Create a PKCS7 wrapper of some plaintext decryptable by recipient_pubkey.  Uses RSA-OAEP with SHA-256
+    to encrypt the AES-256-CBC content key.  Hazmat's PKCS7EnvelopeBuilder doesn't support RSA-OAEP with SHA-256,
+    so we need to build the pieces manually and then put them together in an envelope with asn1crypto.
+    """
+
+    # Encrypt the plaintext with an AES session key, then encrypt the session key to the recipient_pubkey
+    session_key = os.urandom(32)
+    iv = os.urandom(16)
+    encrypted_session_key = recipient_pubkey.encrypt(
+        session_key,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None
+        ),
+    )
+    cipher = Cipher(algorithms.AES(session_key), modes.CBC(iv), backend=default_backend())
+    encryptor = cipher.encryptor()
+    padder = sym_padding.PKCS7(algorithms.AES.block_size).padder()
+    padded_plaintext = padder.update(plaintext) + padder.finalize()
+    encrypted_content = encryptor.update(padded_plaintext) + encryptor.finalize()
+
+    # Now put together the envelope.
+    # Add the recipient with their copy of the session key
+    recipient_identifier = cms.RecipientIdentifier(
+        name="issuer_and_serial_number",
+        value=cms.IssuerAndSerialNumber(
+            {
+                "issuer": asn1_x509.Name.build({"common_name": "recipient"}),
+                "serial_number": 1,
+            }
+        ),
+    )
+    key_enc_algorithm = cms.KeyEncryptionAlgorithm(
+        {
+            "algorithm": OID_RSAES_OAEP,
+            "parameters": algos.RSAESOAEPParams(
+                {
+                    "hash_algorithm": algos.DigestAlgorithm(
+                        {
+                            "algorithm": OID_SHA256,
+                        }
+                    ),
+                    "mask_gen_algorithm": algos.MaskGenAlgorithm(
+                        {
+                            "algorithm": OID_MGF1,
+                            "parameters": algos.DigestAlgorithm(
+                                {
+                                    "algorithm": OID_SHA256,
+                                }
+                            ),
+                        }
+                    ),
+                }
+            ),
+        }
+    )
+    recipient_info = cms.KeyTransRecipientInfo(
+        {
+            "version": "v0",
+            "rid": recipient_identifier,
+            "key_encryption_algorithm": key_enc_algorithm,
+            "encrypted_key": encrypted_session_key,
+        }
+    )
+
+    # Add the encrypted content
+    content_enc_algorithm = cms.EncryptionAlgorithm(
+        {
+            "algorithm": OID_AES256_CBC,
+            "parameters": core.OctetString(iv),
+        }
+    )
+    encrypted_content_info = cms.EncryptedContentInfo(
+        {
+            "content_type": "data",
+            "content_encryption_algorithm": content_enc_algorithm,
+            "encrypted_content": encrypted_content,
+        }
+    )
+    enveloped_data = cms.EnvelopedData(
+        {
+            "version": "v0",
+            "recipient_infos": [recipient_info],
+            "encrypted_content_info": encrypted_content_info,
+        }
+    )
+
+    # Finally add a wrapper and return its bytes
+    content_info = cms.ContentInfo(
+        {
+            "content_type": "enveloped_data",
+            "content": enveloped_data,
+        }
+    )
+    return content_info.dump()

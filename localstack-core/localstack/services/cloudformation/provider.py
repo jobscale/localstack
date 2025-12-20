@@ -5,6 +5,7 @@ import re
 from collections import defaultdict
 from copy import deepcopy
 
+from localstack import config
 from localstack.aws.api import CommonServiceException, RequestContext, handler
 from localstack.aws.api.cloudformation import (
     AlreadyExistsException,
@@ -120,6 +121,7 @@ from localstack.services.cloudformation.stores import (
     find_stack_by_id,
     get_cloudformation_store,
 )
+from localstack.services.plugins import ServiceLifecycleHook
 from localstack.state import StateVisitor
 from localstack.utils.collections import (
     remove_attributes,
@@ -159,7 +161,7 @@ def find_stack_instance(stack_set: StackSet, account: str, region: str):
 
 def stack_not_found_error(stack_name: str):
     # FIXME
-    raise ValidationError("Stack with id %s does not exist" % stack_name)
+    raise ValidationError(f"Stack with id {stack_name} does not exist")
 
 
 def not_found_error(message: str):
@@ -177,7 +179,30 @@ class InternalFailure(CommonServiceException):
         super().__init__("InternalFailure", status_code=500, message=message, sender_fault=False)
 
 
-class CloudformationProvider(CloudformationApi):
+class CloudformationProvider(CloudformationApi, ServiceLifecycleHook):
+    def on_before_start(self):
+        self._validate_config()
+
+    def _validate_config(self):
+        no_wait_value: int = 5
+        try:
+            no_wait_value = int(config.CFN_NO_WAIT_ITERATIONS or 5)
+        except (TypeError, ValueError):
+            LOG.warning(
+                "You have set CFN_NO_WAIT_ITERATIONS to an invalid value: '%s'. It must be an integer greater or equal to 0. Using the default of 5",
+                config.CFN_NO_WAIT_ITERATIONS,
+            )
+
+        if no_wait_value < 0:
+            LOG.warning(
+                "You have set CFN_NO_WAIT_ITERATIONS to an invalid value: '%s'. It must be an integer greater or equal to 0. Using the default of 5",
+                config.CFN_NO_WAIT_ITERATIONS,
+            )
+            no_wait_value = 5
+
+        # Set the configuration back
+        config.CFN_NO_WAIT_ITERATIONS = no_wait_value
+
     def _stack_status_is_active(self, stack_status: str) -> bool:
         return stack_status not in [StackStatus.DELETE_COMPLETE]
 
@@ -305,7 +330,7 @@ class CloudformationProvider(CloudformationApi):
             deployer.deploy_stack()
         except Exception as e:
             stack.set_stack_status("CREATE_FAILED")
-            msg = 'Unable to create stack "%s": %s' % (stack.stack_name, e)
+            msg = f'Unable to create stack "{stack.stack_name}": {e}'
             LOG.error("%s", exc_info=LOG.isEnabledFor(logging.DEBUG))
             raise ValidationError(msg) from e
 
@@ -605,6 +630,8 @@ class CloudformationProvider(CloudformationApi):
         req_params = request
         change_set_type = req_params.get("ChangeSetType", "UPDATE")
         stack_name = req_params.get("StackName")
+        if not stack_name:
+            raise ValidationError("Member must have length greater than or equal to 1")
         change_set_name = req_params.get("ChangeSetName")
         template_body = req_params.get("TemplateBody")
         # s3 or secretsmanager url
@@ -950,8 +977,8 @@ class CloudformationProvider(CloudformationApi):
     def describe_stack_events(
         self,
         context: RequestContext,
-        stack_name: StackName = None,
-        next_token: NextToken = None,
+        stack_name: StackName,
+        next_token: NextToken | None = None,
         **kwargs,
     ) -> DescribeStackEventsOutput:
         if stack_name is None:

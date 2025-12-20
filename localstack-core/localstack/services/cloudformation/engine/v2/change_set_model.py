@@ -681,9 +681,6 @@ class ChangeSetModel:
             scope=arguments_scope, before_value=before_arguments, after_value=after_arguments
         )
 
-        if intrinsic_function == "Ref" and arguments.value == "AWS::NoValue":
-            arguments.value = Nothing
-
         if is_created(before=before_arguments, after=after_arguments):
             change_type = ChangeType.CREATED
         elif is_removed(before=before_arguments, after=after_arguments):
@@ -704,7 +701,7 @@ class ChangeSetModel:
                     "Invalid: Fn::Transforms cannot be nested inside another Fn::Transform"
                 )
 
-            path = "$" + ".".join(scope.split("/")[:-1])
+            path = scope.parent.jsonpath
             before_siblings = extract_jsonpath(self._before_template, path)
             after_siblings = extract_jsonpath(self._after_template, path)
 
@@ -785,6 +782,9 @@ class ChangeSetModel:
 
         logical_id = arguments.value
 
+        if isinstance(logical_id, str) and logical_id.startswith("AWS::"):
+            return arguments.change_type
+
         node_condition = self._retrieve_condition_if_exists(condition_name=logical_id)
         if isinstance(node_condition, NodeCondition):
             return node_condition.change_type
@@ -863,6 +863,7 @@ class ChangeSetModel:
     ) -> bool:
         # a bit hacky but we have to load the resource provider executor _and_ resource provider to get the schema
         # Note: we don't log the attempt to load the resource provider, we need to make sure this is only done once and we already do this in the executor
+
         resource_provider = ResourceProviderExecutor.try_load_resource_provider(resource_type.value)
         if not resource_provider:
             # if we don't support a resource, assume an in-place update for simplicity
@@ -1168,6 +1169,15 @@ class ChangeSetModel:
                 fn_transform,
             ],
         )
+
+        # special case of where either the before or after state does not specify properties but
+        # the resource was in the previous template
+        if (
+            terminal_value_type.change_type == ChangeType.UNCHANGED
+            and properties.change_type != ChangeType.UNCHANGED
+        ):
+            change_type = ChangeType.MODIFIED
+
         requires_replacement = self._resolve_requires_replacement(
             node_properties=properties, resource_type=terminal_value_type
         )

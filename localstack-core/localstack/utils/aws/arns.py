@@ -1,7 +1,7 @@
 import logging
 import re
 from functools import cache
-from typing import Optional, TypedDict
+from typing import TypedDict
 
 from botocore.utils import ArnParser, InvalidArnException
 
@@ -27,7 +27,7 @@ PARTITION_NAMES = list(REGION_PREFIX_TO_PARTITION.values()) + [DEFAULT_PARTITION
 ARN_PARTITION_REGEX = r"^arn:(" + "|".join(sorted(PARTITION_NAMES)) + ")"
 
 
-def get_partition(region: Optional[str]) -> str:
+def get_partition(region: str | None) -> str:
     if not region:
         return DEFAULT_PARTITION
     if region in PARTITION_NAMES:
@@ -65,28 +65,28 @@ def parse_arn(arn: str) -> ArnData:
     return _arn_parser.parse_arn(arn)
 
 
-def extract_account_id_from_arn(arn: str) -> Optional[str]:
+def extract_account_id_from_arn(arn: str) -> str | None:
     try:
         return parse_arn(arn).get("account")
     except InvalidArnException:
         return None
 
 
-def extract_region_from_arn(arn: str) -> Optional[str]:
+def extract_region_from_arn(arn: str) -> str | None:
     try:
         return parse_arn(arn).get("region")
     except InvalidArnException:
         return None
 
 
-def extract_service_from_arn(arn: str) -> Optional[str]:
+def extract_service_from_arn(arn: str) -> str | None:
     try:
         return parse_arn(arn).get("service")
     except InvalidArnException:
         return None
 
 
-def extract_resource_from_arn(arn: str) -> Optional[str]:
+def extract_resource_from_arn(arn: str) -> str | None:
     try:
         return parse_arn(arn).get("resource")
     except InvalidArnException:
@@ -98,8 +98,10 @@ def extract_resource_from_arn(arn: str) -> Optional[str]:
 #
 
 
-def _resource_arn(name: str, pattern: str, account_id: str, region_name: str) -> str:
-    if ":" in name:
+def _resource_arn(
+    name: str, pattern: str, account_id: str, region_name: str, allow_colons=False
+) -> str:
+    if ":" in name and not allow_colons:
         return name
     if len(pattern.split("%s")) == 4:
         return pattern % (get_partition(region_name), account_id, name)
@@ -120,7 +122,7 @@ def iam_role_arn(role_name: str, account_id: str, region_name: str) -> str:
         return role_name
     if re.match(f"{ARN_PARTITION_REGEX}:iam::", role_name):
         return role_name
-    return "arn:%s:iam::%s:role/%s" % (get_partition(region_name), account_id, role_name)
+    return f"arn:{get_partition(region_name)}:iam::{account_id}:role/{role_name}"
 
 
 def iam_resource_arn(resource: str, account_id: str, role: str = None) -> str:
@@ -180,13 +182,7 @@ def dynamodb_table_arn(table_name: str, account_id: str, region_name: str) -> st
 def dynamodb_stream_arn(
     table_name: str, latest_stream_label: str, account_id: str, region_name: str
 ) -> str:
-    return "arn:%s:dynamodb:%s:%s:table/%s/stream/%s" % (
-        get_partition(region_name),
-        region_name,
-        account_id,
-        table_name,
-        latest_stream_label,
-    )
+    return f"arn:{get_partition(region_name)}:dynamodb:{region_name}:{account_id}:table/{table_name}/stream/{latest_stream_label}"
 
 
 #
@@ -288,10 +284,17 @@ def lambda_event_source_mapping_arn(uuid: str, account_id: str, region_name: str
     return _resource_arn(uuid, pattern, account_id=account_id, region_name=region_name)
 
 
+def capacity_provider_arn(capacity_provider_name: str, account_id: str, region_name: str) -> str:
+    pattern = "arn:%s:lambda:%s:%s:capacity-provider:%s"
+    return _resource_arn(
+        capacity_provider_name, pattern, account_id=account_id, region_name=region_name
+    )
+
+
 def lambda_function_or_layer_arn(
     type: str,
     entity_name: str,
-    version: Optional[str],
+    version: str | None,
     account_id: str,
     region_name: str,
 ) -> str:
@@ -453,7 +456,7 @@ def s3_bucket_arn(bucket_name_or_arn: str, region="us-east-1") -> str:
 
 def sqs_queue_arn(queue_name: str, account_id: str, region_name: str) -> str:
     queue_name = queue_name.split("/")[-1]
-    return "arn:%s:sqs:%s:%s:%s" % (get_partition(region_name), region_name, account_id, queue_name)
+    return f"arn:{get_partition(region_name)}:sqs:{region_name}:{account_id}:{queue_name}"
 
 
 #
@@ -462,20 +465,13 @@ def sqs_queue_arn(queue_name: str, account_id: str, region_name: str) -> str:
 
 
 def apigateway_restapi_arn(api_id: str, account_id: str, region_name: str) -> str:
-    return "arn:%s:apigateway:%s:%s:/restapis/%s" % (
-        get_partition(region_name),
-        region_name,
-        account_id,
-        api_id,
+    return (
+        f"arn:{get_partition(region_name)}:apigateway:{region_name}:{account_id}:/restapis/{api_id}"
     )
 
 
 def apigateway_invocations_arn(lambda_uri: str, region_name: str) -> str:
-    return "arn:%s:apigateway:%s:lambda:path/2015-03-31/functions/%s/invocations" % (
-        get_partition(region_name),
-        region_name,
-        lambda_uri,
-    )
+    return f"arn:{get_partition(region_name)}:apigateway:{region_name}:lambda:path/2015-03-31/functions/{lambda_uri}/invocations"
 
 
 #
@@ -485,6 +481,12 @@ def apigateway_invocations_arn(lambda_uri: str, region_name: str) -> str:
 
 def sns_topic_arn(topic_name: str, account_id: str, region_name: str) -> str:
     return f"arn:{get_partition(region_name)}:sns:{region_name}:{account_id}:{topic_name}"
+
+
+def sns_platform_application_arn(
+    platform_application_name: str, platform: str, account_id: str, region_name: str
+) -> str:
+    return f"arn:{get_partition(region_name)}:sns:{region_name}:{account_id}:app/{platform}/{platform_application_name}"
 
 
 #
@@ -555,7 +557,7 @@ def lambda_function_name(name_or_arn: str) -> str:
     if ":" in name_or_arn:
         arn = parse_arn(name_or_arn)
         if arn["service"] != "lambda":
-            raise ValueError("arn is not a lambda arn %s" % name_or_arn)
+            raise ValueError(f"arn is not a lambda arn {name_or_arn}")
 
         return parse_arn(name_or_arn)["resource"].split(":")[1]
     else:

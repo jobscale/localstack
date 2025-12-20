@@ -19,12 +19,13 @@ from localstack.aws.api.cloudformation import (
     StackSetOperation,
     StackStatus,
     StackStatusReason,
+    Tag,
 )
 from localstack.aws.api.cloudformation import (
     Parameter as ApiParameter,
 )
 from localstack.services.cloudformation.engine.entities import (
-    StackIdentifier,
+    StackIdentifierV2,
 )
 from localstack.services.cloudformation.engine.v2.change_set_model import (
     ChangeType,
@@ -40,6 +41,7 @@ class Stack:
     description: str | None
     parameters: list[ApiParameter]
     change_set_id: str | None
+    change_set_ids: set[str]
     status: StackStatus
     status_reason: StackStatusReason | None
     stack_id: str
@@ -48,8 +50,10 @@ class Stack:
     events: list[StackEvent]
     capabilities: list[Capability]
     enable_termination_protection: bool
+    template: dict | None
     processed_template: dict | None
     template_body: str | None
+    tags: list[Tag]
 
     # state after deploy
     resolved_parameters: dict[str, EngineParameter]
@@ -64,24 +68,27 @@ class Stack:
         region_name: str,
         request_payload: CreateChangeSetInput | CreateStackInput,
         initial_status: StackStatus = StackStatus.CREATE_IN_PROGRESS,
+        tags: list[Tag] | None = None,
     ):
         self.account_id = account_id
         self.region_name = region_name
         self.status = initial_status
         self.status_reason = None
-        self.change_set_ids = []
+        self.change_set_ids = set()
         self.creation_time = datetime.now(tz=UTC)
         self.deletion_time = None
         self.change_set_id = None
         self.enable_termination_protection = False
+        self.template = None
         self.processed_template = None
         self.template_body = None
+        self.tags = tags or []
 
         self.stack_name = request_payload["StackName"]
         self.parameters = request_payload.get("Parameters", [])
         self.stack_id = arns.cloudformation_stack_arn(
             self.stack_name,
-            stack_id=StackIdentifier(
+            stack_id=StackIdentifierV2(
                 account_id=self.account_id, region=self.region_name, stack_name=self.stack_name
             ).generate(tags=request_payload.get("Tags")),
             account_id=self.account_id,
@@ -195,6 +202,7 @@ class ChangeSet:
     processed_template: dict | None
     resolved_parameters: dict[str, EngineParameter]
     description: str | None
+    tags: list[Tag]
 
     def __init__(
         self,
@@ -212,6 +220,7 @@ class ChangeSet:
         self.update_model = None
         self.creation_time = datetime.now(tz=UTC)
         self.resolved_parameters = {}
+        self.tags = request_payload.get("Tags") or []
 
         self.change_set_name = request_payload["ChangeSetName"]
         self.change_set_type = request_payload.get("ChangeSetType", ChangeSetType.UPDATE)

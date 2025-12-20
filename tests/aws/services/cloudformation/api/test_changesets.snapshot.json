@@ -519,5 +519,195 @@
     "recorded-content": {
       "waiter-error": "Waiter ChangeSetCreateComplete failed: Waiter encountered a terminal failure state: For expression \"Status\" we matched expected path: \"FAILED\""
     }
+  },
+  "tests/aws/services/cloudformation/api/test_changesets.py::test_create_change_set_no_changes": {
+    "recorded-date": "09-09-2025, 22:08:24",
+    "recorded-content": {
+      "change-set-description": {
+        "Capabilities": [],
+        "ChangeSetId": "arn:<partition>:cloudformation:<region>:111111111111:changeSet/<resource:1>",
+        "ChangeSetName": "<change-set-name:1>",
+        "Changes": [],
+        "CreationTime": "datetime",
+        "ExecutionStatus": "UNAVAILABLE",
+        "IncludeNestedStacks": false,
+        "NotificationARNs": [],
+        "RollbackConfiguration": {},
+        "StackId": "arn:<partition>:cloudformation:<region>:111111111111:stack/<stack-name:1>/<resource:2>",
+        "StackName": "<stack-name:1>",
+        "Status": "FAILED",
+        "StatusReason": "The submitted information didn't contain changes. Submit different information to create a change set.",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/cloudformation/api/test_changesets.py::test_describe_changeset_after_delete": {
+    "recorded-date": "11-09-2025, 11:30:50",
+    "recorded-content": {
+      "describe-deleted-cs": {
+        "Error": {
+          "Code": "ChangeSetNotFound",
+          "Message": "ChangeSet [<cs-1-name>] does not exist",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 404
+        }
+      },
+      "describe-2": {
+        "Capabilities": [],
+        "ChangeSetId": "arn:<partition>:cloudformation:<region>:111111111111:changeSet/<resource:1>",
+        "ChangeSetName": "<change-set-name:1>",
+        "Changes": [
+          {
+            "ResourceChange": {
+              "Action": "Modify",
+              "Details": [
+                {
+                  "CausingEntity": "TopicName",
+                  "ChangeSource": "ParameterReference",
+                  "Evaluation": "Static",
+                  "Target": {
+                    "Attribute": "Properties",
+                    "Name": "TopicName",
+                    "RequiresRecreation": "Always"
+                  }
+                },
+                {
+                  "ChangeSource": "DirectModification",
+                  "Evaluation": "Dynamic",
+                  "Target": {
+                    "Attribute": "Properties",
+                    "Name": "TopicName",
+                    "RequiresRecreation": "Always"
+                  }
+                }
+              ],
+              "LogicalResourceId": "topic123",
+              "PhysicalResourceId": "arn:<partition>:sns:<region>:111111111111:<resource:2>",
+              "PolicyAction": "ReplaceAndDelete",
+              "Replacement": "True",
+              "ResourceType": "AWS::SNS::Topic",
+              "Scope": [
+                "Properties"
+              ]
+            },
+            "Type": "Resource"
+          }
+        ],
+        "CreationTime": "datetime",
+        "ExecutionStatus": "AVAILABLE",
+        "IncludeNestedStacks": false,
+        "NotificationARNs": [],
+        "Parameters": [
+          {
+            "ParameterKey": "TopicName",
+            "ParameterValue": "<topic-2-name>"
+          }
+        ],
+        "RollbackConfiguration": {},
+        "StackId": "arn:<partition>:cloudformation:<region>:111111111111:stack/<stack-name:1>/<resource:3>",
+        "StackName": "<stack-name:1>",
+        "Status": "CREATE_COMPLETE",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/cloudformation/api/test_changesets.py::test_using_pseudoparameters_in_places[resource]": {
+    "recorded-date": "11-09-2025, 22:15:52",
+    "recorded-content": {
+      "error": {
+        "Error": {
+          "Code": "ValidationError",
+          "Message": "Template format error: Resource name AWS::NoValue is non alphanumeric.",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/aws/services/cloudformation/api/test_changesets.py::test_using_pseudoparameters_in_places[condition]": {
+    "recorded-date": "11-09-2025, 22:15:55",
+    "recorded-content": {}
+  },
+  "tests/aws/services/cloudformation/api/test_changesets.py::test_using_pseudoparameters_in_places[parameter]": {
+    "recorded-date": "11-09-2025, 22:15:51",
+    "recorded-content": {
+      "error": {
+        "Error": {
+          "Code": "ValidationError",
+          "Message": "Template format error: Parameter name AWS::NoValue is non alphanumeric.",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/aws/services/cloudformation/api/test_changesets.py::test_create_changeset_for_deleted_stack": {
+    "recorded-date": "10-10-2025, 18:02:05",
+    "recorded-content": {
+      "ErrorForCreate": {
+        "Error": {
+          "Code": "ValidationError",
+          "Message": "Stack [<stack-id>] already exists and cannot be created again with the changeSet [test].",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "ErrorForUpdate": {
+        "Error": {
+          "Code": "ValidationError",
+          "Message": "Stack:<stack-id> is in DELETE_COMPLETE state and can not be updated.",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/aws/services/cloudformation/api/test_changesets.py::test_changeset_for_deleted_stack": {
+    "recorded-date": "10-10-2025, 18:49:37",
+    "recorded-content": {
+      "ErrorForInProgress": {
+        "Error": {
+          "Code": "ValidationError",
+          "Message": "Stack:<stack-id> is in DELETE_IN_PROGRESS state and can not be updated.",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "ErrorForComplete": {
+        "Error": {
+          "Code": "ValidationError",
+          "Message": "Stack:<stack-id> is in DELETE_COMPLETE state and can not be updated.",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
   }
 }

@@ -1137,7 +1137,7 @@
     }
   },
   "tests/aws/services/s3/test_s3.py::TestS3::test_different_location_constraint": {
-    "recorded-date": "21-01-2025, 18:30:47",
+    "recorded-date": "27-11-2025, 10:52:05",
     "recorded-content": {
       "get-bucket-location-bucket-us-east-1": {
         "LocationConstraint": null,
@@ -1158,13 +1158,10 @@
         }
       },
       "create-bucket-constraint-us-east-1-with-None": {
-        "Error": {
-          "Code": "MalformedXML",
-          "Message": "The XML you provided was not well-formed or did not validate against our published schema"
-        },
+        "Location": "<location>",
         "ResponseMetadata": {
           "HTTPHeaders": {},
-          "HTTPStatusCode": 400
+          "HTTPStatusCode": 200
         }
       },
       "get-bucket-location-bucket-us-east-2": {
@@ -1175,6 +1172,16 @@
         }
       },
       "create-bucket-us-east-2-no-constraint-exc": {
+        "Error": {
+          "Code": "IllegalLocationConstraintException",
+          "Message": "The unspecified location constraint is incompatible for the region specific endpoint this request was sent to."
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "create-bucket-constraint-us-east-2-with-None": {
         "Error": {
           "Code": "IllegalLocationConstraintException",
           "Message": "The unspecified location constraint is incompatible for the region specific endpoint this request was sent to."
@@ -2775,7 +2782,7 @@
     }
   },
   "tests/aws/services/s3/test_s3.py::TestS3::test_head_object_fields": {
-    "recorded-date": "21-01-2025, 18:28:10",
+    "recorded-date": "27-11-2025, 15:29:30",
     "recorded-content": {
       "head-object": {
         "AcceptRanges": "bytes",
@@ -4589,12 +4596,13 @@
     }
   },
   "tests/aws/services/s3/test_s3.py::TestS3::test_s3_sse_validate_kms_key": {
-    "recorded-date": "21-01-2025, 18:39:28",
+    "recorded-date": "11-11-2025, 11:12:33",
     "recorded-content": {
       "create-kms-key": {
         "AWSAccountId": "111111111111",
         "Arn": "arn:<partition>:kms:<region_2>:111111111111:key/<uuid:1>",
         "CreationDate": "datetime",
+        "CurrentKeyMaterialId": "<current-key-material-id:1>",
         "CustomerMasterKeySpec": "SYMMETRIC_DEFAULT",
         "Description": "<description:1>",
         "Enabled": true,
@@ -5319,12 +5327,13 @@
     }
   },
   "tests/aws/services/s3/test_s3.py::TestS3::test_s3_sse_validate_kms_key_state": {
-    "recorded-date": "21-01-2025, 18:39:38",
+    "recorded-date": "11-11-2025, 11:14:44",
     "recorded-content": {
       "create-kms-key": {
         "AWSAccountId": "111111111111",
         "Arn": "arn:<partition>:kms:<region>:111111111111:key/<uuid:1>",
         "CreationDate": "datetime",
+        "CurrentKeyMaterialId": "<current-key-material-id:1>",
         "CustomerMasterKeySpec": "SYMMETRIC_DEFAULT",
         "Description": "<description:1>",
         "Enabled": true,
@@ -5342,7 +5351,7 @@
       "success-put-object-sse": {
         "ChecksumCRC32": "KHcEKQ==",
         "ChecksumType": "FULL_OBJECT",
-        "ETag": "\"e1ae6a8d27c2b77e7dcd9b4c8a3b579d\"",
+        "ETag": "\"805149e24234f08e83e3a23326ddcc67\"",
         "SSEKMSKeyId": "arn:<partition>:kms:<region>:111111111111:key/<uuid:1>",
         "ServerSideEncryption": "aws:kms",
         "ResponseMetadata": {
@@ -5357,7 +5366,7 @@
         "ChecksumType": "FULL_OBJECT",
         "ContentLength": 8,
         "ContentType": "binary/octet-stream",
-        "ETag": "\"e1ae6a8d27c2b77e7dcd9b4c8a3b579d\"",
+        "ETag": "\"805149e24234f08e83e3a23326ddcc67\"",
         "LastModified": "datetime",
         "Metadata": {},
         "SSEKMSKeyId": "arn:<partition>:kms:<region>:111111111111:key/<uuid:1>",
@@ -8087,103 +8096,6 @@
       }
     }
   },
-  "tests/aws/services/s3/test_s3.py::TestS3::test_s3_copy_object_preconditions": {
-    "recorded-date": "21-01-2025, 18:29:56",
-    "recorded-content": {
-      "head-object": {
-        "AcceptRanges": "bytes",
-        "ContentLength": 4,
-        "ContentType": "binary/octet-stream",
-        "ETag": "\"8d777f385d3dfec8815d20f7496026dc\"",
-        "LastModified": "datetime",
-        "Metadata": {},
-        "ServerSideEncryption": "AES256",
-        "ResponseMetadata": {
-          "HTTPHeaders": {},
-          "HTTPStatusCode": 200
-        }
-      },
-      "copy-precondition-if-match": {
-        "Error": {
-          "Code": "PreconditionFailed",
-          "Condition": "x-amz-copy-source-If-Match",
-          "Message": "At least one of the pre-conditions you specified did not hold"
-        },
-        "ResponseMetadata": {
-          "HTTPHeaders": {},
-          "HTTPStatusCode": 412
-        }
-      },
-      "copy-precondition-if-unmodified-since": {
-        "Error": {
-          "Code": "PreconditionFailed",
-          "Condition": "x-amz-copy-source-If-Unmodified-Since",
-          "Message": "At least one of the pre-conditions you specified did not hold"
-        },
-        "ResponseMetadata": {
-          "HTTPHeaders": {},
-          "HTTPStatusCode": 412
-        }
-      },
-      "copy-precondition-if-none-match": {
-        "Error": {
-          "Code": "PreconditionFailed",
-          "Condition": "x-amz-copy-source-If-None-Match",
-          "Message": "At least one of the pre-conditions you specified did not hold"
-        },
-        "ResponseMetadata": {
-          "HTTPHeaders": {},
-          "HTTPStatusCode": 412
-        }
-      },
-      "copy-precondition-if-modified-since": {
-        "Error": {
-          "Code": "PreconditionFailed",
-          "Condition": "x-amz-copy-source-If-Modified-Since",
-          "Message": "At least one of the pre-conditions you specified did not hold"
-        },
-        "ResponseMetadata": {
-          "HTTPHeaders": {},
-          "HTTPStatusCode": 412
-        }
-      },
-      "copy-ignore-future-modified-since": {
-        "CopyObjectResult": {
-          "ChecksumCRC32": "rfPzYw==",
-          "ETag": "\"8d777f385d3dfec8815d20f7496026dc\"",
-          "LastModified": "datetime"
-        },
-        "ServerSideEncryption": "AES256",
-        "ResponseMetadata": {
-          "HTTPHeaders": {},
-          "HTTPStatusCode": 200
-        }
-      },
-      "copy-etag-missing-quotes": {
-        "Error": {
-          "Code": "PreconditionFailed",
-          "Condition": "x-amz-copy-source-If-None-Match",
-          "Message": "At least one of the pre-conditions you specified did not hold"
-        },
-        "ResponseMetadata": {
-          "HTTPHeaders": {},
-          "HTTPStatusCode": 412
-        }
-      },
-      "copy-success": {
-        "CopyObjectResult": {
-          "ChecksumCRC32": "rfPzYw==",
-          "ETag": "\"8d777f385d3dfec8815d20f7496026dc\"",
-          "LastModified": "datetime"
-        },
-        "ServerSideEncryption": "AES256",
-        "ResponseMetadata": {
-          "HTTPHeaders": {},
-          "HTTPStatusCode": 200
-        }
-      }
-    }
-  },
   "tests/aws/services/s3/test_s3.py::TestS3BucketLogging::test_put_bucket_logging": {
     "recorded-date": "12-08-2023, 19:54:07",
     "recorded-content": {
@@ -10590,7 +10502,7 @@
     }
   },
   "tests/aws/services/s3/test_s3.py::TestS3::test_get_object_part": {
-    "recorded-date": "07-07-2025, 17:56:14",
+    "recorded-date": "27-11-2025, 15:28:18",
     "recorded-content": {
       "multipart-upload": {
         "Bucket": "<bucket:1>",
@@ -18278,6 +18190,183 @@
         "ResponseMetadata": {
           "HTTPHeaders": {},
           "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3.py::TestS3::test_create_bucket_aws_global": {
+    "recorded-date": "13-10-2025, 14:05:41",
+    "recorded-content": {
+      "xml-error-create-bucket": {
+        "Error": {
+          "Code": "AuthorizationHeaderMalformed",
+          "HostId": "<host-id:1>",
+          "Message": "The authorization header is malformed; the region 'aws-global' is wrong; expecting '<us_east_1_region>'",
+          "Region": "<us_east_1_region>",
+          "RequestId": "<request-id:1>"
+        }
+      },
+      "create-bucket-global": {
+        "Location": "/<bucket-name-1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "head-bucket-global": {
+        "AccessPointAlias": false,
+        "BucketRegion": "<us_east_1_region>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-location-1": {
+        "LocationConstraint": null,
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "list-buckets": {
+        "Buckets": [
+          {
+            "BucketRegion": "<us_east_1_region>",
+            "CreationDate": "datetime",
+            "Name": "<bucket-name-1>"
+          }
+        ],
+        "Owner": {
+          "DisplayName": "<display-name:1>",
+          "ID": "<i-d:1>"
+        },
+        "Prefix": "<bucket-prefix>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3.py::TestS3::test_bucket_constraint_aws_global[us-east-1]": {
+    "recorded-date": "07-11-2025, 16:16:25",
+    "recorded-content": {
+      "aws-global-constraint": {
+        "Error": {
+          "Code": "InvalidLocationConstraint",
+          "LocationConstraint": "aws-global",
+          "Message": "The specified location-constraint is not valid"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3.py::TestS3::test_bucket_constraint_aws_global[us-west-1]": {
+    "recorded-date": "07-11-2025, 16:16:26",
+    "recorded-content": {
+      "aws-global-constraint": {
+        "Error": {
+          "Code": "IllegalLocationConstraintException",
+          "Message": "The aws-global location constraint is incompatible for the region specific endpoint this request was sent to."
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3.py::TestS3::test_create_bucket_with_eu_location_constraint": {
+    "recorded-date": "01-12-2025, 21:59:23",
+    "recorded-content": {
+      "get-bucket-location": {
+        "LocationConstraint": "EU",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "list-bucket-response": {
+        "Buckets": [
+          {
+            "BucketArn": "arn:<partition>:s3:::<name:1>",
+            "BucketRegion": "<bucket-region:1>",
+            "CreationDate": "datetime",
+            "Name": "<name:1>"
+          }
+        ],
+        "Owner": {
+          "ID": "<i-d:1>"
+        },
+        "Prefix": "<name:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3.py::TestS3::test_create_bucket_with_eu_location_constraint_raises": {
+    "recorded-date": "01-12-2025, 22:24:44",
+    "recorded-content": {
+      "eu-location-constraint-error": {
+        "Error": {
+          "Code": "IllegalLocationConstraintException",
+          "Message": "The EU location constraint is incompatible for the region specific endpoint this request was sent to."
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3.py::TestS3::test_create_bucket_with_invalid_location_constraint[us-east-1-us-east-1]": {
+    "recorded-date": "03-12-2025, 10:38:51",
+    "recorded-content": {
+      "us-east-1-location-constraint-us-east-1-error": {
+        "Error": {
+          "Code": "InvalidLocationConstraint",
+          "LocationConstraint": "<location-constraint:1>",
+          "Message": "The specified location-constraint is not valid"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3.py::TestS3::test_create_bucket_with_invalid_location_constraint[us-east-1-foo]": {
+    "recorded-date": "03-12-2025, 10:38:51",
+    "recorded-content": {
+      "us-east-1-location-constraint-foo-error": {
+        "Error": {
+          "Code": "InvalidLocationConstraint",
+          "LocationConstraint": "<location-constraint:1>",
+          "Message": "The specified location-constraint is not valid"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/aws/services/s3/test_s3.py::TestS3::test_create_bucket_with_invalid_location_constraint[eu-west-1-bar]": {
+    "recorded-date": "03-12-2025, 10:38:51",
+    "recorded-content": {
+      "eu-west-1-location-constraint-bar-error": {
+        "Error": {
+          "Code": "IllegalLocationConstraintException",
+          "Message": "The bar location constraint is incompatible for the region specific endpoint this request was sent to."
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
         }
       }
     }

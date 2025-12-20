@@ -668,6 +668,7 @@ class TestEc2Integrations:
         assert subnet["Tags"][0]["Key"] == TAG_KEY_CUSTOM_ID
         assert subnet["Tags"][0]["Value"] == custom_subnet_id
 
+    @markers.requires_in_process
     @markers.aws.only_localstack
     @pytest.mark.parametrize("strategy", ["tag", "id_manager"])
     @pytest.mark.parametrize("default_vpc", [True, False])
@@ -749,6 +750,7 @@ class TestEc2Integrations:
             "$..Tags",  # Tags can differ between environments
             "$..Vpc.IsDefault",  # TODO: CreateVPC should return an IsDefault param
             "$..Vpc.DhcpOptionsId",  # FIXME: DhcpOptionsId uses different reference formats in AWS vs LocalStack
+            "$..Vpc.State",  # Moto VPC immediately reaches the 'available' state, vs. AWS VPC which has a 'pending' state
         ]
     )
     @markers.aws.validated
@@ -1005,6 +1007,7 @@ def test_pickle_ec2_backend(pickle_backends, aws_client):
     assert pickle_backends(ec2_backends)
 
 
+@markers.requires_in_process
 @markers.aws.only_localstack
 def test_create_specific_vpc_id(account_id, region_name, create_vpc, set_resource_custom_id):
     cidr_block = "10.0.0.0/16"

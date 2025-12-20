@@ -1,6 +1,6 @@
 {
   "tests/aws/services/cloudformation/test_template_engine.py::TestTypes::test_implicit_type_conversion": {
-    "recorded-date": "29-08-2023, 15:21:22",
+    "recorded-date": "27-08-2025, 09:39:00",
     "recorded-content": {
       "queue": {
         "Attributes": {
@@ -14,7 +14,7 @@
           "FifoQueue": "true",
           "FifoThroughputLimit": "perQueue",
           "LastModifiedTimestamp": "timestamp",
-          "MaximumMessageSize": "262144",
+          "MaximumMessageSize": "1048576",
           "MessageRetentionPeriod": "345600",
           "QueueArn": "arn:<partition>:sqs:<region>:111111111111:<resource:1>",
           "ReceiveMessageWaitTimeSeconds": "0",
@@ -690,6 +690,15 @@
     "recorded-date": "06-08-2025, 09:34:07",
     "recorded-content": {
       "error-response": "An error occurred (ValidationError) when calling the CreateChangeSet operation: Parameter InputValue should either have input value or default value"
+    }
+  },
+  "tests/aws/services/cloudformation/test_template_engine.py::TestSsmParameters::test_resolve_ssm": {
+    "recorded-date": "24-09-2025, 22:06:32",
+    "recorded-content": {
+      "results": {
+        "ParameterValue": "abc:<parameter-value>",
+        "TopicName": "<parameter-value>"
+      }
     }
   }
 }

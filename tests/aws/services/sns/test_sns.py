@@ -1,10 +1,12 @@
 import base64
 import contextlib
+import importlib
 import json
 import logging
 import queue
 import random
 import time
+import uuid
 from io import BytesIO
 from operator import itemgetter
 
@@ -17,6 +19,7 @@ from botocore.exceptions import ClientError
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
+from localstack_snapshot.snapshots.transformer import RegexTransformer
 from pytest_httpserver import HTTPServer
 from werkzeug import Response
 
@@ -31,10 +34,10 @@ from localstack.services.sns.constants import (
     SMS_MSGS_ENDPOINT,
     SUBSCRIPTION_TOKENS_ENDPOINT,
 )
-from localstack.services.sns.provider import SnsProvider
 from localstack.testing.aws.util import is_aws_cloud
 from localstack.testing.config import TEST_AWS_ACCESS_KEY_ID, TEST_AWS_SECRET_ACCESS_KEY
 from localstack.testing.pytest import markers
+from localstack.testing.snapshots.transformer_utility import TransformerUtility
 from localstack.utils import testutil
 from localstack.utils.aws.arns import get_partition, parse_arn, sqs_queue_arn
 from localstack.utils.net import wait_for_port_closed, wait_for_port_open
@@ -43,6 +46,7 @@ from localstack.utils.sync import poll_condition, retry
 from localstack.utils.testutil import check_expected_lambda_log_events_length
 from tests.aws.services.lambda_.functions import lambda_integration
 from tests.aws.services.lambda_.test_lambda import TEST_LAMBDA_PYTHON, TEST_LAMBDA_PYTHON_ECHO
+from tests.aws.services.sns.conftest import is_sns_v1_provider, skip_if_sns_v2
 
 LOG = logging.getLogger(__name__)
 
@@ -69,9 +73,17 @@ def sns_create_platform_application(aws_client):
     yield factory
 
     for platform_application in platform_applications:
-        endpoints = aws_client.sns.list_endpoints_by_platform_application(
-            PlatformApplicationArn=platform_application
-        )
+        try:
+            endpoints = aws_client.sns.list_endpoints_by_platform_application(
+                PlatformApplicationArn=platform_application
+            )
+        except Exception as e:
+            LOG.debug(
+                "Error cleaning up platform app '%s': %s",
+                platform_application,
+                e,
+            )
+            return
         for endpoint in endpoints["Endpoints"]:
             try:
                 aws_client.sns.delete_endpoint(EndpointArn=endpoint["EndpointArn"])
@@ -88,14 +100,53 @@ def sns_create_platform_application(aws_client):
             LOG.debug("Error cleaning up platform application '%s': %s", platform_application, e)
 
 
+@pytest.fixture
+def sns_create_platform_endpoint(aws_client):
+    platform_endpoints = []
+
+    def factory(platform_application_arn: str, token: str, **kwargs):
+        response = aws_client.sns.create_platform_endpoint(
+            PlatformApplicationArn=platform_application_arn, Token=token, **kwargs
+        )
+        platform_endpoints.append(response["EndpointArn"])
+        return response
+
+    yield factory
+
+    for endpoint in platform_endpoints:
+        try:
+            aws_client.sns.delete_endpoint(EndpointArn=endpoint["EndpointArn"])
+        except Exception as e:
+            LOG.debug(
+                "Error cleaning up platform endpoint '%s': %s",
+                endpoint,
+                e,
+            )
+
+
+@pytest.fixture
+def sns_provider():
+    def factory(**kwargs):
+        if is_sns_v1_provider():
+            provider = "localstack.services.sns.provider"
+        else:
+            provider = "localstack.services.sns.v2.provider"
+        # TODO: remove once legacy provider is retired completely and import normally
+        module = importlib.import_module(provider)
+        SnsProvider = module.SnsProvider
+        return SnsProvider
+
+    return factory
+
+
 class TestSNSTopicCrud:
     @markers.aws.validated
     @markers.snapshot.skip_snapshot_verify(
         paths=[
-            "$.get-topic-attrs.Attributes.DeliveryPolicy",
+            "$.get-topic-attrs.Attributes.DeliveryPolicy",  # TODO: remove this with the v2 provider switch
             "$.get-topic-attrs.Attributes.EffectiveDeliveryPolicy",
-            "$.get-topic-attrs.Attributes.Policy.Statement..Action",  # SNS:Receive is added by moto but not returned in AWS
-        ]
+        ],
+        condition=is_sns_v1_provider,
     )
     def test_create_topic_with_attributes(self, sns_create_topic, snapshot, aws_client):
         create_topic = sns_create_topic(
@@ -163,11 +214,10 @@ class TestSNSTopicCrud:
     @markers.aws.validated
     @markers.snapshot.skip_snapshot_verify(
         paths=[
-            "$.get-topic-attrs.Attributes.DeliveryPolicy",
+            "$.get-topic-attrs.Attributes.DeliveryPolicy",  # TODO: remove this with the v2 provider switch
             "$.get-topic-attrs.Attributes.EffectiveDeliveryPolicy",
-            "$.get-topic-attrs.Attributes.Policy.Statement..Action",
-            # SNS:Receive is added by moto but not returned in AWS
-        ]
+        ],
+        condition=is_sns_v1_provider,
     )
     def test_create_topic_test_arn(self, sns_create_topic, snapshot, aws_client, account_id):
         topic_name = "topic-test-create"
@@ -319,6 +369,281 @@ class TestSNSTopicCrud:
             TopicArn=topic_arn,
         )
         snapshot.match("get-topic-attrs-after-delete", get_attrs_updated)
+
+
+class TestSNSTopicCrudV2:
+    @markers.aws.validated
+    def test_delete_non_existent_topic(self, snapshot, aws_client, account_id, region_name):
+        response = aws_client.sns.delete_topic(
+            TopicArn=f"arn:aws:sns:{region_name}:{account_id}:non-existent-{short_uid()}"
+        )
+
+        snapshot.match("delete-non-existent-topic", response)
+
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        # skipped only for v1
+        condition=is_sns_v1_provider,
+        paths=[
+            "$..Attributes.DeliveryPolicy",
+            "$..Attributes.EffectiveDeliveryPolicy",
+        ],
+    )
+    def test_create_topic_should_be_idempotent(self, snapshot, sns_create_topic, aws_client):
+        topic_name = f"test-idempotent-{short_uid()}"
+
+        resp1 = sns_create_topic(Name=topic_name)
+        aws_client.sns.set_topic_attributes(
+            TopicArn=resp1["TopicArn"], AttributeName="DisplayName", AttributeValue="AlreadySet"
+        )
+        attrs = aws_client.sns.get_topic_attributes(TopicArn=resp1["TopicArn"])
+        snapshot.match("topic-attrs-idempotent-1", attrs)
+
+        resp2 = sns_create_topic(Name=topic_name)
+        attrs = aws_client.sns.get_topic_attributes(TopicArn=resp2["TopicArn"])
+        snapshot.match("topic-attrs-idempotent-2", attrs)
+
+    @markers.snapshot.skip_snapshot_verify(
+        # skipped only for v1
+        condition=is_sns_v1_provider,
+        paths=["$..Error.Message"],
+    )
+    @markers.aws.validated
+    def test_create_topic_name_constraints(self, snapshot, sns_create_topic):
+        # Valid names within length constraints
+        valid_name = "a" * 256
+        resp = sns_create_topic(Name=valid_name)
+        snapshot.match("valid-name-max-length", resp)
+
+        # Invalid names: too short / too long
+        with pytest.raises(ClientError) as e:
+            sns_create_topic(Name="")
+        snapshot.match("name-too-short", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            sns_create_topic(Name="a" * 257)
+        snapshot.match("name-too-long", e.value.response)
+
+        # Invalid chars
+        # TODO: the index is used because using special characters in the matched name doesn't work for all chars
+        #  -> we should write a snapshot test to investigate further
+        for index, c in enumerate([":", ";", "!", "@", "|", "^", "%", " "]):
+            with pytest.raises(ClientError) as e:
+                sns_create_topic(Name=f"bad{c}name")
+            snapshot.match(f"name-invalid-char-{index}", e.value.response)
+
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        # skipped only for v1
+        condition=is_sns_v1_provider,
+        paths=[
+            "$..Attributes.DeliveryPolicy",
+            "$..Attributes.EffectiveDeliveryPolicy",
+        ],
+    )
+    def test_create_topic_in_multiple_regions(
+        self, aws_client, aws_client_factory, snapshot, region_name, secondary_region_name
+    ):
+        topic_name = f"multiregion-{short_uid()}"
+        snapshot.add_transformer(RegexTransformer(region_name, "<region-primary>"))
+        snapshot.add_transformer(RegexTransformer(secondary_region_name, "<region-secondary>"))
+
+        sns_primary_region = aws_client_factory(region_name=region_name).sns
+        topic_arn_primary_region = sns_primary_region.create_topic(Name=topic_name)["TopicArn"]
+
+        sns_secondary_region = aws_client_factory(region_name=secondary_region_name).sns
+        topic_arn_secondary_region = sns_secondary_region.create_topic(Name=topic_name)["TopicArn"]
+
+        list_topics_primary = sns_primary_region.list_topics()
+        snapshot.match("list-primary", list_topics_primary)
+        list_topics_secondary = sns_secondary_region.list_topics()
+        snapshot.match("list-secondary", list_topics_secondary)
+
+        snapshot.match(
+            "topic-east", sns_primary_region.get_topic_attributes(TopicArn=topic_arn_primary_region)
+        )
+        snapshot.match(
+            "topic-west",
+            sns_secondary_region.get_topic_attributes(TopicArn=topic_arn_secondary_region),
+        )
+
+    @markers.aws.validated
+    def test_list_topic_paging(self, aws_client, sns_create_topic):
+        topic_arns = []
+        page_size = 100
+        for i in range(page_size + 20):  # > default page size
+            resp = sns_create_topic(Name=f"paging-{i}-{short_uid()}")
+            topic_arns.append(resp["TopicArn"])
+
+        resp = aws_client.sns.list_topics()
+        assert len(resp["Topics"]) == page_size
+
+        assert "NextToken" in resp
+        token = resp["NextToken"]
+
+        resp2 = aws_client.sns.list_topics(NextToken=token)
+
+        # Collect all returned ARNs to ensure no duplicates / missing
+        all_returned_arns = [t["TopicArn"] for t in resp["Topics"]] + [
+            t["TopicArn"] for t in resp2["Topics"]
+        ]
+        assert set(topic_arns).issubset(set(all_returned_arns))
+
+    @pytest.mark.skipif(is_sns_v1_provider(), reason="not covered in v1")
+    @markers.aws.validated
+    def test_topic_get_attributes_with_fifo_false(self, sns_create_topic, aws_client, snapshot):
+        resp = sns_create_topic(
+            Name=f"standard-topic-{short_uid()}", Attributes={"FifoTopic": "false"}
+        )
+        topic_arn = resp["TopicArn"]
+
+        attrs = aws_client.sns.get_topic_attributes(TopicArn=topic_arn)
+        snapshot.match("get-attrs-standard-topic", attrs)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.set_topic_attributes(
+                TopicArn=topic_arn, AttributeName="FifoTopic", AttributeValue="false"
+            )
+        snapshot.match("set-fifo-false-after-creation", e.value.response)
+
+    @markers.aws.validated
+    def test_topic_add_permission(self, sns_create_topic, aws_client, snapshot, account_id):
+        topic_arn = sns_create_topic()["TopicArn"]
+        resp = aws_client.sns.add_permission(
+            TopicArn=topic_arn, Label="test", AWSAccountId=[account_id], ActionName=["Publish"]
+        )
+        snapshot.match("add-permission-response", resp)
+
+        attributes_resp = aws_client.sns.get_topic_attributes(TopicArn=topic_arn)
+        policy_str = attributes_resp["Attributes"]["Policy"]
+        policy_json = json.loads(policy_str)
+        snapshot.match("topic-policy-after-permission", policy_json)
+
+    @markers.aws.validated
+    def test_topic_add_multiple_permissions(
+        self, sns_create_topic, aws_client, snapshot, account_id
+    ):
+        topic_arn = sns_create_topic()["TopicArn"]
+        resp = aws_client.sns.add_permission(
+            TopicArn=topic_arn,
+            Label="test",
+            AWSAccountId=[account_id],
+            ActionName=["Publish", "Subscribe"],
+        )
+        snapshot.match("add-permission-response", resp)
+
+        attributes_resp = aws_client.sns.get_topic_attributes(TopicArn=topic_arn)
+        policy_str = attributes_resp["Attributes"]["Policy"]
+        policy_json = json.loads(policy_str)
+        snapshot.match("topic-policy-after-permission", policy_json)
+
+    @markers.aws.validated
+    def test_topic_remove_permission(self, sns_create_topic, aws_client, snapshot, account_id):
+        topic_arn = sns_create_topic()["TopicArn"]
+        label = "test"
+        aws_client.sns.add_permission(
+            TopicArn=topic_arn, Label=label, AWSAccountId=[account_id], ActionName=["Publish"]
+        )
+
+        aws_client.sns.remove_permission(TopicArn=topic_arn, Label=label)
+        attributes_resp = aws_client.sns.get_topic_attributes(TopicArn=topic_arn)
+        policy_str = attributes_resp["Attributes"]["Policy"]
+        policy_json = json.loads(policy_str)
+        snapshot.match("topic-policy", policy_json)
+
+    @markers.snapshot.skip_snapshot_verify(paths=["$..Error.Message"], condition=is_sns_v1_provider)
+    @markers.aws.validated
+    def test_add_permission_errors(self, snapshot, aws_client, account_id):
+        topic_name = f"topic-{short_uid()}"
+        topic_arn = aws_client.sns.create_topic(Name=topic_name)["TopicArn"]
+
+        aws_client.sns.add_permission(
+            TopicArn=topic_arn,
+            Label="test",
+            AWSAccountId=[account_id],
+            ActionName=["Publish"],
+        )
+
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.add_permission(
+                TopicArn=topic_arn,
+                Label="test",
+                AWSAccountId=[account_id],
+                ActionName=["AddPermission"],
+            )
+        snapshot.match("duplicate-label", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.add_permission(
+                TopicArn=f"{topic_arn}-not-existing",
+                Label="test-2",
+                AWSAccountId=[account_id],
+                ActionName=["AddPermission"],
+            )
+        snapshot.match("topic-not-found", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.add_permission(
+                TopicArn=topic_arn,
+                Label="test-2",
+                AWSAccountId=[account_id],
+                ActionName=["InvalidAction"],
+            )
+        snapshot.match("invalid-action", e.value.response)
+
+    @markers.aws.validated
+    def test_remove_permission_errors(self, snapshot, aws_client, account_id):
+        topic_name = f"topic-{short_uid()}"
+        topic_arn = aws_client.sns.create_topic(Name=topic_name)["TopicArn"]
+        aws_client.sns.add_permission(
+            TopicArn=topic_arn,
+            Label="test",
+            AWSAccountId=[account_id],
+            ActionName=["Publish"],
+        )
+
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.remove_permission(TopicArn=f"{topic_arn}-not-existing", Label="test")
+
+        snapshot.match("topic-not-found", e.value.response)
+
+    @markers.aws.validated
+    @pytest.mark.skipif(condition=is_sns_v1_provider(), reason="Not implemented in moto")
+    def test_data_protection_policy_crud(self, snapshot, aws_client, region_name):
+        topic_name = f"topic-{short_uid()}"
+        topic_arn = aws_client.sns.create_topic(Name=topic_name)["TopicArn"]
+
+        policy_doc = {
+            "Name": "data_protection_policy",
+            "Description": "Test Policy",
+            "Version": "2021-06-01",
+            "Statement": [
+                {
+                    "Sid": "test-statement",
+                    "DataDirection": "Inbound",
+                    "Principal": ["*"],
+                    "DataIdentifier": [
+                        f"arn:aws:dataprotection:{region_name}::data-identifier/EmailAddress"
+                    ],
+                    "Operation": {"Deny": {}},
+                }
+            ],
+        }
+
+        response = aws_client.sns.get_topic_attributes(TopicArn=topic_arn)
+        snapshot.match("get-topic-attributes-before-policy", response)
+
+        response = aws_client.sns.put_data_protection_policy(
+            ResourceArn=topic_arn, DataProtectionPolicy=json.dumps(policy_doc)
+        )
+        snapshot.match("put-data-protection-policy", response)
+
+        response = aws_client.sns.get_data_protection_policy(ResourceArn=topic_arn)
+        snapshot.match("get-data-protection-policy", response)
+
+        # check if policy shows up in the attributes
+        response = aws_client.sns.get_topic_attributes(TopicArn=topic_arn)
+        snapshot.match("get-topic-attributes-after-policy", response)
 
 
 class TestSNSPublishCrud:
@@ -942,41 +1267,29 @@ class TestSNSSubscriptionCrud:
         snapshot.match("token-not-exists", e.value.response)
 
     @markers.aws.validated
-    @markers.snapshot.skip_snapshot_verify(
-        paths=["$.list-subscriptions.Subscriptions"],
-        # there could be cleanup issues and don't want to flake, manually assert
-    )
     def test_list_subscriptions(
         self,
         sns_create_topic,
         sqs_create_queue,
         sqs_get_queue_arn,
         sns_subscription,
-        snapshot,
         aws_client,
     ):
-        snapshot.add_transformer(snapshot.transform.key_value("NextToken"))
         topic = sns_create_topic()
         topic_arn = topic["TopicArn"]
-        snapshot.match("create-topic-1", topic)
         topic_2 = sns_create_topic()
         topic_arn_2 = topic_2["TopicArn"]
-        snapshot.match("create-topic-2", topic_2)
-        sorting_list = []
+        created_subscriptions = []
         for i in range(3):
             queue_url = sqs_create_queue()
             queue_arn = sqs_get_queue_arn(queue_url)
-            subscription = sns_subscription(TopicArn=topic_arn, Protocol="sqs", Endpoint=queue_arn)
-            snapshot.match(f"sub-topic-1-{i}", subscription)
-            sorting_list.append((topic_arn, queue_arn))
+            sns_subscription(TopicArn=topic_arn, Protocol="sqs", Endpoint=queue_arn)
+            created_subscriptions.append((topic_arn, queue_arn))
         for i in range(3):
             queue_url = sqs_create_queue()
             queue_arn = sqs_get_queue_arn(queue_url)
-            subscription = sns_subscription(
-                TopicArn=topic_arn_2, Protocol="sqs", Endpoint=queue_arn
-            )
-            snapshot.match(f"sub-topic-2-{i}", subscription)
-            sorting_list.append((topic_arn_2, queue_arn))
+            sns_subscription(TopicArn=topic_arn_2, Protocol="sqs", Endpoint=queue_arn)
+            created_subscriptions.append((topic_arn_2, queue_arn))
 
         list_subs = aws_client.sns.list_subscriptions()
         all_subs = list_subs["Subscriptions"]
@@ -985,11 +1298,8 @@ class TestSNSSubscriptionCrud:
                 list_subs = aws_client.sns.list_subscriptions(NextToken=next_token)
                 all_subs.extend(list_subs["Subscriptions"])
 
-        all_subs.sort(key=lambda x: sorting_list.index((x["TopicArn"], x["Endpoint"])))
-        list_subs["Subscriptions"] = all_subs
-        snapshot.match("list-subscriptions-aggregated", list_subs)
-
-        assert all((sub["TopicArn"], sub["Endpoint"]) in sorting_list for sub in all_subs)
+        all_sub_tuples = [(sub["TopicArn"], sub["Endpoint"]) for sub in all_subs]
+        assert all(sub in all_sub_tuples for sub in created_subscriptions)
 
     @markers.aws.validated
     def test_list_subscriptions_by_topic_pagination(
@@ -1120,21 +1430,30 @@ class TestSNSSubscriptionCrud:
         snapshot.match("unsubscribe-2", unsubscribe_2)
 
     @markers.aws.validated
-    def test_unsubscribe_wrong_arn_format(self, snapshot, aws_client):
+    def test_unsubscribe_wrong_arn_format(self, snapshot, aws_client_factory, region_name):
+        sns_client = aws_client_factory(
+            region_name=region_name, config=Config(parameter_validation=False)
+        ).sns
+
         with pytest.raises(ClientError) as e:
-            aws_client.sns.unsubscribe(SubscriptionArn="randomstring")
+            sns_client.unsubscribe(SubscriptionArn="randomstring")
 
         snapshot.match("invalid-unsubscribe-arn-1", e.value.response)
 
         with pytest.raises(ClientError) as e:
-            aws_client.sns.unsubscribe(SubscriptionArn="arn:aws:sns:us-east-1:random")
+            sns_client.unsubscribe(SubscriptionArn="arn:aws:sns:us-east-1:random")
 
         snapshot.match("invalid-unsubscribe-arn-2", e.value.response)
 
         with pytest.raises(ClientError) as e:
-            aws_client.sns.unsubscribe(SubscriptionArn="arn:aws:sns:us-east-1:111111111111:random")
+            sns_client.unsubscribe(SubscriptionArn="arn:aws:sns:us-east-1:111111111111:random")
 
         snapshot.match("invalid-unsubscribe-arn-3", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            sns_client.unsubscribe()
+
+        snapshot.match("invalid-unsubscribe-arn-4", e.value.response)
 
     @markers.aws.validated
     def test_subscribe_with_invalid_topic(self, sns_create_topic, sns_subscription, snapshot):
@@ -1162,6 +1481,305 @@ class TestSNSSubscriptionCrud:
             )
 
         snapshot.match("non-existent-topic", e.value.response)
+
+
+class TestSNSSubscriptionCrudV2:
+    @markers.aws.validated
+    def test_subscribe_sms(self, sns_create_topic, aws_client, snapshot):
+        topic_name = f"test-topic-{short_uid()}"
+        snapshot.add_transformer(snapshot.transform.regex(topic_name, "<topic>"))
+        topic_arn = sns_create_topic(Name=topic_name)["TopicArn"]
+
+        resp = aws_client.sns.subscribe(
+            TopicArn=topic_arn,
+            Protocol="sms",
+            Endpoint="+1234567890",
+        )
+        snapshot.match("subscribe-sms-1", resp)
+
+    # FIXME
+    @pytest.mark.skipif(not is_aws_cloud(), reason="not accepting valid sms endpoint")
+    @markers.aws.validated
+    def test_subscribe_sms_obscure_phone_number(self, sns_create_topic, aws_client, snapshot):
+        topic_name = f"test-topic-{short_uid()}"
+        snapshot.add_transformer(snapshot.transform.regex(topic_name, "<topic>"))
+        topic_arn = sns_create_topic(Name=topic_name)["TopicArn"]
+        resp = aws_client.sns.subscribe(
+            TopicArn=topic_arn,
+            Protocol="sms",
+            Endpoint="+12/34-567.890",
+        )
+        snapshot.match("subscribe-sms-2", resp)
+
+    @markers.aws.validated
+    def test_subscribe_unknown_topic(self, aws_client, snapshot, account_id, region_name):
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.subscribe(
+                TopicArn=f"arn:aws:sns:{region_name}:{account_id}:unknown-{short_uid()}",
+                Protocol="sms",
+                Endpoint="+1234567890",
+            )
+        snapshot.match("subscribe-unknown-topic", e.value.response)
+
+    @markers.aws.validated
+    def test_subscribe_unknown_sqs_queue(
+        self, sns_create_topic, aws_client, snapshot, account_id, region_name
+    ):
+        topic_name = f"test-topic-{short_uid()}"
+        snapshot.add_transformer(snapshot.transform.regex(topic_name, "<topic>"))
+        topic_arn = sns_create_topic(Name=topic_name)["TopicArn"]
+        resp = aws_client.sns.subscribe(
+            TopicArn=topic_arn,
+            Protocol="sqs",
+            Endpoint=f"arn:aws:sqs:{region_name}:{account_id}:unknown-{short_uid()}",
+        )
+        snapshot.match("subscribe-unknown-sqs", resp)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.subscribe(
+                TopicArn=topic_arn,
+                Protocol="sqs",
+                Endpoint="unknown",
+            )
+        snapshot.match("subscribe-unknown-sqs-invalid_arn", e.value.response)
+
+    @markers.aws.validated
+    def test_subscribe_sqs_queue_url(
+        self, sns_create_topic, sqs_create_queue, aws_client, snapshot
+    ):
+        topic_arn = sns_create_topic(Name=f"sqs-topic-{short_uid()}")["TopicArn"]
+        queue_url = sqs_create_queue(QueueName=f"queue-{short_uid()}")
+
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.subscribe(
+                TopicArn=topic_arn,
+                Protocol="sqs",
+                Endpoint=queue_url,
+            )
+
+        snapshot.match("subscribe-sqs-via-url-error", e.value.response)
+
+    @markers.aws.validated
+    def test_subscribe_invalid_sms(self, sns_create_topic, aws_client, snapshot):
+        topic_arn = sns_create_topic(Name=f"bad-sms-{short_uid()}")["TopicArn"]
+
+        invalid_numbers = ["+15--551234567", "NAA+15551234567", "+15551234567.", "/+15551234567"]
+
+        for number in invalid_numbers:
+            with pytest.raises(ClientError) as e:
+                aws_client.sns.subscribe(
+                    TopicArn=topic_arn,
+                    Protocol="sms",
+                    Endpoint=number,
+                )
+            snapshot.match(f"subscribe-bad-sms-{number}", e.value.response)
+
+    # TODO: Parametrize for email protocol as well
+    @markers.aws.validated
+    def test_creating_subscription(self, sns_create_topic, aws_client, snapshot):
+        topic_arn = sns_create_topic(Name=f"create-sub-{short_uid()}")["TopicArn"]
+
+        resp = aws_client.sns.subscribe(
+            TopicArn=topic_arn, Protocol="http", Endpoint="http://example.com/"
+        )
+        # TODO: investigate why it leaves the subscription in `SNS.ListSubscriptions`, we maybe need to clean up
+        #  after deleting topics, not fully in parity as AWS cleans up instantly
+        snapshot.match("create-subscription", resp)
+
+    # TODO: parametrize for email protocol
+    @markers.aws.validated
+    def test_unsubscribe_from_deleted_topic(self, sns_create_topic, aws_client, snapshot):
+        topic_arn = sns_create_topic(Name=f"del-topic-sub-{short_uid()}")["TopicArn"]
+
+        sub_arn = aws_client.sns.subscribe(
+            TopicArn=topic_arn,
+            Protocol="http",
+            Endpoint="http://example.com/",
+        )["SubscriptionArn"]
+
+        aws_client.sns.delete_topic(TopicArn=topic_arn)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.unsubscribe(SubscriptionArn=sub_arn)
+        snapshot.match("unsubscribe-deleted-topic", e.value.response)
+
+    # TODO: parametrize for http and email protocol
+    @markers.aws.validated
+    def test_getting_subscriptions_by_topic(
+        self, sns_create_topic, sqs_create_queue, sqs_get_queue_arn, aws_client, snapshot
+    ):
+        topic_arn = sns_create_topic(Name=f"get-subs-{short_uid()}")["TopicArn"]
+        queue_url = sqs_create_queue(QueueName=f"queue-{short_uid()}")
+
+        aws_client.sns.subscribe(
+            TopicArn=topic_arn,
+            Protocol="sqs",
+            Endpoint=sqs_get_queue_arn(queue_url),
+        )
+
+        resp = aws_client.sns.list_subscriptions_by_topic(TopicArn=topic_arn)
+        snapshot.match("list-subscriptions-by-topic", resp)
+
+    @markers.aws.validated
+    def test_subscription_paging(self, sns_create_topic, aws_client, snapshot, sns_subscription):
+        topic_arn = sns_create_topic(Name=f"paging-sub-{short_uid()}")["TopicArn"]
+
+        sub_arns = []
+        for i in range(120):
+            sub_arns.append(
+                sns_subscription(
+                    TopicArn=topic_arn,
+                    Protocol="email",
+                    Endpoint=f"user{i}@example.com",
+                )["SubscriptionArn"]
+            )
+
+        resp = aws_client.sns.list_subscriptions_by_topic(TopicArn=topic_arn)
+        assert "NextToken" in resp
+
+    @pytest.mark.skip(reason="TODO")
+    @markers.aws.validated
+    def test_subscribe_attributes(self, sns_create_topic, aws_client, snapshot):
+        topic_arn = sns_create_topic(Name=f"sub-attrs-{short_uid()}")["TopicArn"]
+
+        sub_arn = aws_client.sns.subscribe(
+            TopicArn=topic_arn,
+            Protocol="email",
+            Endpoint="test@example.com",
+        )["SubscriptionArn"]
+
+        resp = aws_client.sns.get_subscription_attributes(SubscriptionArn=sub_arn)
+        snapshot.match("get-subscription-attributes", resp)
+
+    @pytest.mark.skip(reason="TODO")
+    @markers.aws.needs_fixing
+    def test_creating_subscription_with_attributes(self, sns_create_topic, aws_client, snapshot):
+        topic_arn = sns_create_topic(Name=f"sub-with-attrs-{short_uid()}")["TopicArn"]
+
+        sub_arn = aws_client.sns.subscribe(
+            TopicArn=topic_arn,
+            Protocol="email",
+            Endpoint="test@example.com",
+            Attributes={"RawMessageDelivery": "true"},
+        )["SubscriptionArn"]
+
+        attrs = aws_client.sns.get_subscription_attributes(SubscriptionArn=sub_arn)
+        snapshot.match("subscription-with-attributes", attrs)
+
+    @pytest.mark.skip(reason="TODO")
+    @markers.aws.needs_fixing
+    def test_delete_subscriptions_on_delete_topic(self, sns_create_topic, aws_client, snapshot):
+        topic_arn = sns_create_topic(Name=f"del-subs-topic-{short_uid()}")["TopicArn"]
+
+        sub_arn = aws_client.sns.subscribe(
+            TopicArn=topic_arn,
+            Protocol="email",
+            Endpoint="test@example.com",
+        )["SubscriptionArn"]
+
+        aws_client.sns.delete_topic(TopicArn=topic_arn)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.get_subscription_attributes(SubscriptionArn=sub_arn)
+        snapshot.match("get-sub-after-topic-delete", e.value.response)
+
+    @pytest.mark.skip(reason="TODO")
+    @markers.aws.needs_fixing
+    def test_set_subscription_attributes(self, sns_create_topic, aws_client, snapshot):
+        topic_arn = sns_create_topic(Name=f"set-attr-sub-{short_uid()}")["TopicArn"]
+
+        sub_arn = aws_client.sns.subscribe(
+            TopicArn=topic_arn,
+            Protocol="email",
+            Endpoint="test@example.com",
+        )["SubscriptionArn"]
+
+        aws_client.sns.set_subscription_attributes(
+            SubscriptionArn=sub_arn,
+            AttributeName="RawMessageDelivery",
+            AttributeValue="true",
+        )
+
+        attrs = aws_client.sns.get_subscription_attributes(SubscriptionArn=sub_arn)
+        assert attrs["Attributes"]["RawMessageDelivery"] == "true"
+        snapshot.match("set-subscription-attributes", attrs)
+
+    @pytest.mark.skip(reason="TODO")
+    @markers.aws.needs_fixing
+    def test_subscribe_invalid_filter_policy(self, sns_create_topic, aws_client, snapshot):
+        topic_arn = sns_create_topic(Name=f"filter-policy-{short_uid()}")["TopicArn"]
+
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.subscribe(
+                TopicArn=topic_arn,
+                Protocol="email",
+                Endpoint="test@example.com",
+                Attributes={"FilterPolicy": "invalid-json"},
+            )
+        snapshot.match("subscribe-invalid-filter-policy", e.value.response)
+
+    @pytest.mark.skip(reason="TODO")
+    @markers.aws.needs_fixing
+    def test_check_not_opted_out(self, sns_create_topic, aws_client, snapshot):
+        sns_create_topic(Name=f"optout-{short_uid()}")["TopicArn"]
+
+        resp = aws_client.sns.check_if_phone_number_is_opted_out(PhoneNumber="+1234567890")
+        snapshot.match("check-not-opted-out", resp)
+
+    @pytest.mark.skip(reason="TODO")
+    @markers.aws.needs_fixing
+    def test_check_opted_out(self, sns_create_topic, aws_client, snapshot):
+        sns_create_topic(Name=f"opted-{short_uid()}")["TopicArn"]
+
+        # Simulate opt-out
+        aws_client.sns.opt_in_phone_number(PhoneNumber="+1234567890")
+        resp = aws_client.sns.check_if_phone_number_is_opted_out(PhoneNumber="+1234567890")
+        snapshot.match("check-opted-out", resp)
+
+    @pytest.mark.skip(reason="TODO")
+    @markers.aws.needs_fixing
+    def test_check_opted_out_invalid(self, sns_create_topic, aws_client, snapshot):
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.check_if_phone_number_is_opted_out(PhoneNumber="invalid-number")
+        snapshot.match("check-opted-out-invalid", e.value.response)
+
+    @pytest.mark.skip(reason="TODO")
+    @markers.aws.needs_fixing
+    def test_list_opted_out(self, sns_create_topic, aws_client, snapshot):
+        resp = aws_client.sns.list_phone_numbers_opted_out()
+        snapshot.match("list-opted-out", resp)
+
+    @pytest.mark.skip(reason="TODO")
+    @markers.aws.needs_fixing
+    def test_opt_in(self, sns_create_topic, aws_client, snapshot):
+        aws_client.sns.opt_in_phone_number(PhoneNumber="+1234567890")
+        resp = aws_client.sns.check_if_phone_number_is_opted_out(PhoneNumber="+1234567890")
+        snapshot.match("opt-in", resp)
+
+    @pytest.mark.skip(reason="TODO")
+    @markers.aws.needs_fixing
+    def test_confirm_subscription(self, sns_create_topic, aws_client, snapshot):
+        topic_arn = sns_create_topic(Name=f"confirm-sub-{short_uid()}")["TopicArn"]
+
+        aws_client.sns.subscribe(
+            TopicArn=topic_arn,
+            Protocol="email",
+            Endpoint="test@example.com",
+        )
+
+        resp = aws_client.sns.confirm_subscription(
+            TopicArn=topic_arn, Token="fake-token", AuthenticateOnUnsubscribe="true"
+        )
+        snapshot.match("confirm-subscription", resp)
+
+    @pytest.mark.skip(reason="TODO")
+    @markers.aws.needs_fixing
+    def test_get_subscription_attributes_error_not_exists(self, aws_client, snapshot):
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.get_subscription_attributes(
+                SubscriptionArn=f"arn:aws:sns:us-east-1:000000000000:nonexistent-{short_uid()}"
+            )
+        snapshot.match("get-sub-attrs-nonexistent", e.value.response)
 
 
 class TestSNSSubscriptionLambda:
@@ -2567,7 +3185,8 @@ class TestSNSSubscriptionSQSFifo:
             "$.topic-attrs.Attributes.DeliveryPolicy",
             "$.topic-attrs.Attributes.EffectiveDeliveryPolicy",
             "$.topic-attrs.Attributes.Policy.Statement..Action",  # SNS:Receive is added by moto but not returned in AWS
-        ]
+        ],
+        condition=is_sns_v1_provider,
     )
     @pytest.mark.parametrize("raw_message_delivery", [True, False])
     def test_publish_fifo_messages_to_dlq(
@@ -2726,12 +3345,17 @@ class TestSNSSubscriptionSQSFifo:
     @markers.aws.validated
     @markers.snapshot.skip_snapshot_verify(
         paths=[
+            "$.republish-batch-response-fifo.Successful..MessageId",  # TODO: SNS doesnt keep track of duplicate
+            "$.republish-batch-response-fifo.Successful..SequenceNumber",  # TODO: SNS doesnt keep track of duplicate
+        ],
+    )
+    @markers.snapshot.skip_snapshot_verify(
+        paths=[
             "$.topic-attrs.Attributes.DeliveryPolicy",
             "$.topic-attrs.Attributes.EffectiveDeliveryPolicy",
             "$.topic-attrs.Attributes.Policy.Statement..Action",  # SNS:Receive is added by moto but not returned in AWS
-            "$.republish-batch-response-fifo.Successful..MessageId",  # TODO: SNS doesnt keep track of duplicate
-            "$.republish-batch-response-fifo.Successful..SequenceNumber",  # TODO: SNS doesnt keep track of duplicate
-        ]
+        ],
+        condition=is_sns_v1_provider,
     )
     @pytest.mark.parametrize("content_based_deduplication", [True, False])
     def test_publish_batch_messages_from_fifo_topic_to_fifo_queue(
@@ -3088,9 +3712,10 @@ class TestSNSSubscriptionSQSFifo:
 
 
 class TestSNSSubscriptionSES:
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_topic_email_subscription_confirmation(
-        self, sns_create_topic, sns_subscription, aws_client
+        self, sns_create_topic, sns_subscription, aws_client, sns_provider
     ):
         # FIXME: we do not send the token to the email endpoint, so they cannot validate it
         # create AWS validated test for format
@@ -3103,6 +3728,7 @@ class TestSNSSubscriptionSES:
         )
         subscription_arn = subscription["SubscriptionArn"]
         parsed_arn = parse_arn(subscription_arn)
+        SnsProvider = sns_provider()
         store = SnsProvider.get_store(parsed_arn["account"], parsed_arn["region"])
 
         sub_attr = aws_client.sns.get_subscription_attributes(SubscriptionArn=subscription_arn)
@@ -3120,6 +3746,7 @@ class TestSNSSubscriptionSES:
 
         retry(check_subscription, retries=PUBLICATION_RETRIES, sleep=PUBLICATION_TIMEOUT)
 
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_email_sender(
         self,
@@ -3164,7 +3791,649 @@ class TestSNSSubscriptionSES:
         assert messages[0]["Source"] == sender_address
 
 
+@pytest.fixture(scope="class")
+def platform_credentials() -> tuple[str, str]:
+    # these values need to be extracted from a real amazon developer account if tested against AWS
+    # https://developer.amazon.com/settings/console/securityprofile/overview.html
+    client_id = "dummy"
+    client_secret = "dummy"
+    return client_id, client_secret
+
+
+@pytest.fixture(scope="class")
+def phone_number() -> str:
+    # if you want to test phone number operations against AWS and a real phone number, replace this value
+    # and use this fixture.
+    # note: you might need to verify that number first in your AWS account due to the sms sandbox
+    phone_number = "+430000000000"
+    return phone_number
+
+
+class TestSNSPlatformApplicationCrud:
+    @markers.aws.manual_setup_required
+    def test_create_platform_application(
+        self, aws_client, snapshot, sns_create_platform_application, platform_credentials
+    ):
+        platform = "ADM"
+        # if tested against AWS, the fixture needs to contain real credentials
+        client_id, client_secret = platform_credentials
+        attributes = {"PlatformPrincipal": client_id, "PlatformCredential": client_secret}
+        response = sns_create_platform_application(Platform=platform, Attributes=attributes)
+        snapshot.match("create-platform-application", response)
+
+    @pytest.mark.skipif(condition=is_sns_v1_provider(), reason="Parity gap with old provider")
+    @markers.aws.manual_setup_required
+    def test_list_platform_applications(
+        self, aws_client, snapshot, sns_create_platform_application, platform_credentials
+    ):
+        name = f"platform-application-{short_uid()}"
+        platform = "ADM"
+        # if tested against AWS, the fixture needs to contain real credentials
+        client_id, client_secret = platform_credentials
+        attributes = {"PlatformPrincipal": client_id, "PlatformCredential": client_secret}
+        sns_create_platform_application(Name=name, Platform=platform, Attributes=attributes)
+
+        response = aws_client.sns.list_platform_applications()
+        snapshot.match("list-platform-applications", response)
+
+    @pytest.mark.parametrize(
+        "attributes",
+        [
+            {},
+            {"PlatformPrincipal": "dummy"},
+            {"PlatformCredential": "dummy"},
+        ],
+        ids=["no-args", "missing-credential", "missing-principal"],
+    )
+    @pytest.mark.skipif(condition=is_sns_v1_provider(), reason="Parity gap with old provider")
+    @markers.aws.validated
+    def test_create_platform_application_invalid_attributes(self, aws_client, snapshot, attributes):
+        # We cannot actually verify the validity of the passed credentials, which is why it is not part of this test
+        name = f"platform-application-{short_uid()}"
+        platform = "ADM"
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.create_platform_application(
+                Name=name, Platform=platform, Attributes=attributes
+            )
+        snapshot.match("platform-application-no-attributes", e.value.response)
+
+    @pytest.mark.skipif(condition=is_sns_v1_provider(), reason="Parity gap with old provider")
+    @pytest.mark.parametrize(
+        "name", [f"{'a' * 257}", "", "@name"], ids=["too-long", "empty", "invalid-char"]
+    )
+    @markers.aws.validated
+    def test_create_platform_application_invalid_name(self, aws_client, snapshot, name):
+        attributes = {"PlatformPrincipal": "dummy", "PlatformCredential": "dummy"}
+        platform = "ADM"
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.create_platform_application(
+                Name=name, Platform=platform, Attributes=attributes
+            )
+        snapshot.match("invalid-application-name", e.value.response)
+
+    @pytest.mark.skipif(condition=is_sns_v1_provider(), reason="Parity gap with old provider")
+    @markers.aws.validated
+    def test_create_platform_application_invalid_platform(self, aws_client, snapshot):
+        attributes = {"PlatformPrincipal": "dummy", "PlatformCredential": "dummy"}
+
+        name = f"platform-application-{short_uid()}"
+        invalid_platform = "AAA"
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.create_platform_application(
+                Name=name, Platform=invalid_platform, Attributes=attributes
+            )
+        snapshot.match("invalid-platform", e.value.response)
+
+    @pytest.mark.skipif(condition=is_sns_v1_provider(), reason="Parity gap with old provider")
+    @markers.aws.manual_setup_required
+    def test_get_platform_application_attributes(
+        self, aws_client, snapshot, sns_create_platform_application, platform_credentials
+    ):
+        name = f"platform-application-{short_uid()}"
+        platform = "ADM"
+        # if tested against AWS, the fixture needs to contain real credentials
+        client_id, client_secret = platform_credentials
+        attributes = {"PlatformPrincipal": client_id, "PlatformCredential": client_secret}
+        platform_application_arn = sns_create_platform_application(
+            Name=name, Platform=platform, Attributes=attributes
+        )["PlatformApplicationArn"]
+        response = aws_client.sns.get_platform_application_attributes(
+            PlatformApplicationArn=platform_application_arn
+        )
+        snapshot.match("get-application-attributes", response)
+
+    @pytest.mark.skipif(condition=is_sns_v1_provider(), reason="Parity gap with old provider")
+    @markers.aws.validated
+    def test_get_platform_application_attributes_invalid_arn(self, aws_client, snapshot):
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.get_platform_application_attributes(PlatformApplicationArn="invalid-arn")
+        snapshot.match("invalid-application-arn", e.value.response)
+
+    @markers.aws.validated
+    def test_get_platform_application_attributes_non_existing_app(
+        self, aws_client, snapshot, account_id, region_name
+    ):
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.get_platform_application_attributes(
+                PlatformApplicationArn=f"arn:aws:sns:{region_name}:{account_id}:app/ADM/NonExistingApp"
+            )
+        snapshot.match("non_existing-application-arn", e.value.response)
+
+    @pytest.mark.skipif(condition=is_sns_v1_provider(), reason="Parity gap with old provider")
+    @markers.aws.manual_setup_required
+    def test_set_platform_application_attributes(
+        self, aws_client, snapshot, sns_create_platform_application, platform_credentials
+    ):
+        name = f"platform-application-{short_uid()}"
+        platform = "ADM"
+        # if tested against AWS, the fixture needs to contain real credentials
+        client_id, client_secret = platform_credentials
+        attributes = {"PlatformPrincipal": client_id, "PlatformCredential": client_secret}
+        platform_application_arn = sns_create_platform_application(
+            Name=name, Platform=platform, Attributes=attributes
+        )["PlatformApplicationArn"]
+
+        attributes = {"SuccessFeedbackSampleRate": "50"}
+        aws_client.sns.set_platform_application_attributes(
+            Attributes=attributes, PlatformApplicationArn=platform_application_arn
+        )
+        # give the attributes time to propagate
+        if is_aws_cloud():
+            time.sleep(30)
+        response = aws_client.sns.get_platform_application_attributes(
+            PlatformApplicationArn=platform_application_arn
+        )
+        snapshot.match("set-get-application-attributes", response)
+
+    @pytest.mark.skipif(condition=is_sns_v1_provider(), reason="Parity gap with old provider")
+    @markers.aws.validated
+    def test_set_platform_application_attributes_invalid_arn(self, aws_client, snapshot):
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.set_platform_application_attributes(
+                PlatformApplicationArn="invalid-arn", Attributes={}
+            )
+        snapshot.match("invalid-application-arn", e.value.response)
+
+    @pytest.mark.skipif(condition=is_sns_v1_provider(), reason="Parity gap with old provider")
+    @pytest.mark.parametrize(
+        "attributes",
+        [
+            {},
+            {"PlatformPrincipal": "dummy"},
+        ],
+        ids=["no-args", "dummy-args"],
+    )
+    @markers.aws.validated
+    def test_set_platform_application_attributes_non_existing_app(
+        self, aws_client, snapshot, account_id, region_name, attributes
+    ):
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.set_platform_application_attributes(
+                PlatformApplicationArn=f"arn:aws:sns:{region_name}:{account_id}:app/ADM/NonExistingApp",
+                Attributes=attributes,
+            )
+        snapshot.match("non_existing-application-arn", e.value.response)
+
+
+class TestSNSPlatformEndpointCrud:
+    @markers.aws.manual_setup_required
+    def test_create_platform_endpoint(
+        self,
+        sns_create_platform_application,
+        sns_create_platform_endpoint,
+        aws_client,
+        account_id,
+        region_name,
+        platform_credentials,
+        snapshot,
+    ):
+        # if tested against AWS, the fixture needs to contain real credentials
+        app_name = f"platform-application-{short_uid()}"
+        snapshot.add_transformer(RegexTransformer(app_name, "<platform_application>"))
+        principal, credential = platform_credentials
+        attributes = {"PlatformPrincipal": principal, "PlatformCredential": credential}
+        app_arn = sns_create_platform_application(
+            Name=app_name, Platform="ADM", Attributes=attributes
+        )["PlatformApplicationArn"]
+        response = sns_create_platform_endpoint(platform_application_arn=app_arn, token="token_1")
+        snapshot.match("create-platform-endpoint", response)
+
+    @markers.aws.manual_setup_required
+    def test_create_platform_endpoint_idempotency(
+        self,
+        sns_create_platform_application,
+        aws_client,
+        account_id,
+        region_name,
+        platform_credentials,
+        sns_create_platform_endpoint,
+        snapshot,
+    ):
+        # if tested against AWS, the fixture needs to contain real credentials
+        principal, credential = platform_credentials
+        attributes = {"PlatformPrincipal": principal, "PlatformCredential": credential}
+        app_name = f"platform-application-{short_uid()}"
+        snapshot.add_transformer(RegexTransformer(app_name, "<platform_application>"))
+        app_arn = sns_create_platform_application(
+            Name=app_name, Platform="ADM", Attributes=attributes
+        )["PlatformApplicationArn"]
+        response = sns_create_platform_endpoint(platform_application_arn=app_arn, token="token_1")
+        snapshot.match("create-platform-endpoint", response)
+
+        # create again with the same attributes and token
+        response = sns_create_platform_endpoint(platform_application_arn=app_arn, token="token_1")
+        snapshot.match("create-platform-endpoint-idempotent", response)
+
+        # create again with different attributes
+        with pytest.raises(ClientError) as e:
+            sns_create_platform_endpoint(
+                platform_application_arn=app_arn, token="token_1", Attributes={"Enabled": "false"}
+            )
+        snapshot.match("create-platform-endpoint-different-token", e.value.response)
+
+    @markers.aws.validated
+    def test_create_platform_endpoint_non_existent_app(
+        self,
+        sns_create_platform_application,
+        aws_client,
+        account_id,
+        region_name,
+        snapshot,
+    ):
+        platform_application_arn = "arn:aws:sns:%s:%s:app/ADM/non_existent_app"
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.create_platform_endpoint(
+                PlatformApplicationArn=platform_application_arn % (region_name, account_id),
+                Token="token_1",
+            )
+        snapshot.match("create-platform-endpoint", e.value.response)
+
+    @markers.aws.manual_setup_required
+    def test_list_platform_endpoints(
+        self,
+        sns_create_platform_application,
+        aws_client,
+        account_id,
+        region_name,
+        platform_credentials,
+        sns_create_platform_endpoint,
+        snapshot,
+    ):
+        app_name = f"platform-application-{short_uid()}"
+        snapshot.add_transformer(RegexTransformer(app_name, "<platform_application>"))
+        # if tested against AWS, the fixture needs to contain real credentials
+        principal, credential = platform_credentials
+        attributes = {"PlatformPrincipal": principal, "PlatformCredential": credential}
+        app_arn = sns_create_platform_application(
+            Name=app_name, Platform="ADM", Attributes=attributes
+        )["PlatformApplicationArn"]
+        sns_create_platform_endpoint(platform_application_arn=app_arn, token="token_1")
+        response = aws_client.sns.list_endpoints_by_platform_application(
+            PlatformApplicationArn=app_arn
+        )
+
+        snapshot.match("list-endpoints-by-app", response)
+
+    @markers.aws.manual_setup_required
+    def test_delete_platform_endpoint(
+        self,
+        sns_create_platform_application,
+        aws_client,
+        account_id,
+        region_name,
+        platform_credentials,
+        sns_create_platform_endpoint,
+        snapshot,
+    ):
+        app_name = f"platform-application-{short_uid()}"
+        snapshot.add_transformer(RegexTransformer(app_name, "<platform_application>"))
+        # if tested against AWS, the fixture needs to contain real credentials
+        principal, credential = platform_credentials
+        attributes = {"PlatformPrincipal": principal, "PlatformCredential": credential}
+        app_arn = sns_create_platform_application(
+            Name=app_name, Platform="ADM", Attributes=attributes
+        )["PlatformApplicationArn"]
+        endpoint_arn = sns_create_platform_endpoint(
+            platform_application_arn=app_arn, token="token_1"
+        )["EndpointArn"]
+        response = aws_client.sns.list_endpoints_by_platform_application(
+            PlatformApplicationArn=app_arn
+        )
+        snapshot.match("list-endpoints-by-app-pre-delete", response)
+
+        response = aws_client.sns.delete_endpoint(EndpointArn=endpoint_arn)
+        snapshot.match("delete-endpoint", response)
+        if is_aws_cloud():
+            time.sleep(10)
+        response = aws_client.sns.list_endpoints_by_platform_application(
+            PlatformApplicationArn=app_arn
+        )
+        snapshot.match("list-endpoints-by-app-post-delete", response)
+
+    @markers.snapshot.skip_snapshot_verify(
+        paths=[
+            "$..NextToken"
+        ],  # FIXME: investigate why AWS is not deterministic here, NextToken is sometimes present, sometimes not
+    )
+    @markers.aws.manual_setup_required
+    def test_delete_platform_endpoint_with_subscription(
+        self,
+        sns_create_platform_application,
+        sns_create_topic,
+        sns_subscription,
+        aws_client,
+        account_id,
+        region_name,
+        platform_credentials,
+        sns_create_platform_endpoint,
+        snapshot,
+    ):
+        # from the docs https://docs.aws.amazon.com/cli/latest/reference/sns/delete-endpoint.html
+        # "When you delete an endpoint that is also subscribed to a topic, then
+        # you must also unsubscribe the endpoint from the topic."
+        # This test validates this particular case
+
+        app_name = f"platform-application-{short_uid()}"
+        snapshot.add_transformer(RegexTransformer(app_name, "<platform_application>"))
+        snapshot.add_transformer(snapshot.transform.key_value("NextToken"))
+        # if tested against AWS, the fixture needs to contain real credentials
+        principal, credential = platform_credentials
+        attributes = {"PlatformPrincipal": principal, "PlatformCredential": credential}
+        app_arn = sns_create_platform_application(
+            Name=app_name, Platform="ADM", Attributes=attributes
+        )["PlatformApplicationArn"]
+        endpoint_arn = sns_create_platform_endpoint(
+            platform_application_arn=app_arn, token="token_1"
+        )["EndpointArn"]
+        topic_arn = sns_create_topic()["TopicArn"]
+        sns_subscription(TopicArn=topic_arn, Protocol="application", Endpoint=endpoint_arn)
+
+        # time to let the changes propagate
+        if is_aws_cloud():
+            time.sleep(20)
+
+        # we list subscriptions by topic, as some tests are not cleaning up properly
+        response = aws_client.sns.list_subscriptions_by_topic(TopicArn=topic_arn)
+        snapshot.match("list-subscriptions-pre-delete", response)
+
+        response = aws_client.sns.delete_endpoint(EndpointArn=endpoint_arn)
+        snapshot.match("delete-endpoint", response)
+
+        # time to let the changes propagate
+        if is_aws_cloud():
+            time.sleep(20)
+
+        response = aws_client.sns.list_subscriptions_by_topic(TopicArn=topic_arn)
+        snapshot.match("list-subscriptions-post-delete", response)
+
+    @markers.aws.manual_setup_required
+    def test_delete_endpoints_of_deleted_app(
+        self,
+        sns_create_platform_application,
+        sns_create_topic,
+        sns_subscription,
+        aws_client,
+        account_id,
+        region_name,
+        platform_credentials,
+        sns_create_platform_endpoint,
+        snapshot,
+    ):
+        app_name = f"platform-application-{short_uid()}"
+        snapshot.add_transformer(RegexTransformer(app_name, "<platform_application>"))
+        # if tested against AWS, the fixture needs to contain real credentials
+        principal, credential = platform_credentials
+        attributes = {"PlatformPrincipal": principal, "PlatformCredential": credential}
+        app_arn = sns_create_platform_application(
+            Name=app_name, Platform="ADM", Attributes=attributes
+        )["PlatformApplicationArn"]
+        endpoint_arn = sns_create_platform_endpoint(
+            platform_application_arn=app_arn, token="token_1"
+        )["EndpointArn"]
+
+        response = aws_client.sns.delete_platform_application(PlatformApplicationArn=app_arn)
+        snapshot.match("delete-application", response)
+        if is_aws_cloud():
+            time.sleep(10)
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.list_endpoints_by_platform_application(PlatformApplicationArn=app_arn)
+        snapshot.match("list-endpoints-after-app-delete", e.value.response)
+
+        aws_client.sns.delete_endpoint(EndpointArn=endpoint_arn)
+
+    @markers.aws.manual_setup_required
+    def test_get_platform_endpoint_attributes(
+        self,
+        aws_client,
+        snapshot,
+        platform_credentials,
+        sns_create_platform_endpoint,
+        sns_create_platform_application,
+    ):
+        app_name = f"platform-application-{short_uid()}"
+        snapshot.add_transformer(RegexTransformer(app_name, "<platform_application>"))
+        # if tested against AWS, the fixture needs to contain real credentials
+        principal, credential = platform_credentials
+        attributes = {"PlatformPrincipal": principal, "PlatformCredential": credential}
+        app_arn = sns_create_platform_application(
+            Name=app_name, Platform="ADM", Attributes=attributes
+        )["PlatformApplicationArn"]
+        endpoint_arn = sns_create_platform_endpoint(
+            platform_application_arn=app_arn, token="token_1"
+        )["EndpointArn"]
+
+        response = aws_client.sns.get_endpoint_attributes(EndpointArn=endpoint_arn)
+        snapshot.match("get-platform-endpoint-attributes", response)
+
+    @markers.aws.manual_setup_required
+    def test_set_platform_endpoint_attributes(
+        self,
+        snapshot,
+        platform_credentials,
+        sns_create_platform_endpoint,
+        sns_create_platform_application,
+        aws_client,
+    ):
+        app_name = f"platform-application-{short_uid()}"
+        snapshot.add_transformer(RegexTransformer(app_name, "<platform_application>"))
+        # if tested against AWS, the fixture needs to contain real credentials
+        principal, credential = platform_credentials
+        attributes = {"PlatformPrincipal": principal, "PlatformCredential": credential}
+        app_arn = sns_create_platform_application(
+            Name=app_name, Platform="ADM", Attributes=attributes
+        )["PlatformApplicationArn"]
+        endpoint_arn = sns_create_platform_endpoint(
+            platform_application_arn=app_arn, token="token_1"
+        )["EndpointArn"]
+
+        new_attributes = {"Enabled": "false"}
+        response = aws_client.sns.set_endpoint_attributes(
+            EndpointArn=endpoint_arn, Attributes=new_attributes
+        )
+        snapshot.match("set-platform-endpoint-attributes", response)
+
+        response = aws_client.sns.get_endpoint_attributes(EndpointArn=endpoint_arn)
+        snapshot.match("get-platform-endpoint-attributes", response)
+
+    @markers.aws.validated
+    def test_get_platform_endpoint_attributes_non_existent_endpoint(
+        self,
+        snapshot,
+        platform_credentials,
+        sns_create_platform_endpoint,
+        sns_create_platform_application,
+        aws_client,
+        account_id,
+        region_name,
+    ):
+        endpoint_arn = f"arn:aws:sns:{region_name}:{account_id}:endpoint/ADM/fakeapp/{uuid.uuid4()}"
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.get_endpoint_attributes(EndpointArn=endpoint_arn)
+        snapshot.match("set-platform-endpoint-attributes-non-existent-app", e.value.response)
+
+    @markers.aws.validated
+    def test_set_platform_endpoint_attributes_non_existent_endpoint(
+        self,
+        snapshot,
+        platform_credentials,
+        sns_create_platform_endpoint,
+        sns_create_platform_application,
+        aws_client,
+        account_id,
+        region_name,
+    ):
+        endpoint_arn = f"arn:aws:sns:{region_name}:{account_id}:endpoint/ADM/fakeapp/{uuid.uuid4()}"
+        attributes = {"Enabled": "false"}
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.set_endpoint_attributes(EndpointArn=endpoint_arn, Attributes=attributes)
+        snapshot.match("set-platform-endpoint-attributes-non-existent-app", e.value.response)
+
+    @pytest.mark.skipif(condition=is_sns_v1_provider(), reason="Parity gap with old provider")
+    @pytest.mark.parametrize(
+        "attributes",
+        [
+            {},
+            {"PlatformPrincipal": "Principal"},
+            {"PlatformCredential": "Credential"},
+            {"InvalidKey": "Value"},
+            {"CustomUserData": "A" * 2050},
+        ],
+        ids=[
+            "Empty",
+            "Invalid_Name_Principal",
+            "Invalid_Name_Credential",
+            "Invalid_Name_Generic",
+            "Data_Too_Long",
+        ],
+    )
+    @markers.aws.manual_setup_required
+    def test_set_platform_endpoint_attributes_invalid_attributes(
+        self,
+        snapshot,
+        platform_credentials,
+        sns_create_platform_endpoint,
+        sns_create_platform_application,
+        aws_client,
+        attributes,
+    ):
+        app_name = f"platform-application-{short_uid()}"
+        snapshot.add_transformer(RegexTransformer(app_name, "<platform_application>"))
+        # if tested against AWS, the fixture needs to contain real credentials
+        principal, credential = platform_credentials
+        initial_attributes = {"PlatformPrincipal": principal, "PlatformCredential": credential}
+        app_arn = sns_create_platform_application(
+            Name=app_name, Platform="ADM", Attributes=initial_attributes
+        )["PlatformApplicationArn"]
+        endpoint_arn = sns_create_platform_endpoint(
+            platform_application_arn=app_arn, token="token_1"
+        )["EndpointArn"]
+
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.set_endpoint_attributes(EndpointArn=endpoint_arn, Attributes=attributes)
+        snapshot.match("set-platform-endpoint-invalid-attributes", e.value.response)
+
+    @pytest.mark.skipif(condition=is_sns_v1_provider(), reason="Parity gap with old provider")
+    @pytest.mark.parametrize(
+        "attributes",
+        [
+            {"PlatformPrincipal": "Principal"},
+            {"PlatformCredential": "Credential"},
+            {"InvalidKey": "Value"},
+            {"CustomUserData": "A" * 2050},
+        ],
+        ids=[
+            "Invalid_Name_Principal",
+            "Invalid_Name_Credential",
+            "Invalid_Name_Generic",
+            "Data_Too_Long",
+        ],
+    )
+    @markers.aws.manual_setup_required
+    def test_create_platform_endpoint_with_invalid_attributes(
+        self,
+        snapshot,
+        platform_credentials,
+        sns_create_platform_endpoint,
+        sns_create_platform_application,
+        aws_client,
+        attributes,
+    ):
+        app_name = f"platform-application-{short_uid()}"
+        snapshot.add_transformer(RegexTransformer(app_name, "<platform_application>"))
+        # if tested against AWS, the fixture needs to contain real credentials
+        principal, credential = platform_credentials
+        platform_attributes = {"PlatformPrincipal": principal, "PlatformCredential": credential}
+        app_arn = sns_create_platform_application(
+            Name=app_name, Platform="ADM", Attributes=platform_attributes
+        )["PlatformApplicationArn"]
+        with pytest.raises(ClientError) as e:
+            sns_create_platform_endpoint(
+                platform_application_arn=app_arn, token="token_1", Attributes=attributes
+            )
+        snapshot.match("create-platform-endpoint-invalid-attr", e.value.response)
+
+    @pytest.mark.skipif(condition=is_sns_v1_provider(), reason="Parity gap with old provider")
+    @markers.aws.manual_setup_required
+    def test_create_platform_endpoint_custom_data(
+        self,
+        snapshot,
+        platform_credentials,
+        sns_create_platform_endpoint,
+        sns_create_platform_application,
+        aws_client,
+    ):
+        app_name = f"platform-application-{short_uid()}"
+        snapshot.add_transformer(RegexTransformer(app_name, "<platform_application>"))
+        # if tested against AWS, the fixture needs to contain real credentials
+        principal, credential = platform_credentials
+        platform_attributes = {"PlatformPrincipal": principal, "PlatformCredential": credential}
+        app_arn = sns_create_platform_application(
+            Name=app_name, Platform="ADM", Attributes=platform_attributes
+        )["PlatformApplicationArn"]
+
+        custom_user_data = "bar"
+        endpoint_arn = sns_create_platform_endpoint(
+            platform_application_arn=app_arn, token="token_1", CustomUserData=custom_user_data
+        )["EndpointArn"]
+
+        response = aws_client.sns.get_endpoint_attributes(EndpointArn=endpoint_arn)
+        snapshot.match("create-endpoint-double-custom-data", response)
+
+    @markers.aws.manual_setup_required
+    def test_create_platform_endpoint_double_custom_data(
+        self,
+        snapshot,
+        platform_credentials,
+        sns_create_platform_endpoint,
+        sns_create_platform_application,
+        aws_client,
+    ):
+        # For some reason, CustomUserData can be specified both as parameter directly and inside attributes.
+
+        app_name = f"platform-application-{short_uid()}"
+        snapshot.add_transformer(RegexTransformer(app_name, "<platform_application>"))
+        # if tested against AWS, the fixture needs to contain real credentials
+        principal, credential = platform_credentials
+        platform_attributes = {"PlatformPrincipal": principal, "PlatformCredential": credential}
+        app_arn = sns_create_platform_application(
+            Name=app_name, Platform="ADM", Attributes=platform_attributes
+        )["PlatformApplicationArn"]
+
+        attributes = {"CustomUserData": "foo"}
+        custom_user_data = "bar"
+        endpoint_arn = sns_create_platform_endpoint(
+            platform_application_arn=app_arn,
+            token="token_1",
+            Attributes=attributes,
+            CustomUserData=custom_user_data,
+        )["EndpointArn"]
+
+        response = aws_client.sns.get_endpoint_attributes(EndpointArn=endpoint_arn)
+        snapshot.match("create-endpoint-double-custom-data", response)
+
+
 class TestSNSPlatformEndpoint:
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_subscribe_platform_endpoint(
         self,
@@ -3174,13 +4443,19 @@ class TestSNSPlatformEndpoint:
         aws_client,
         account_id,
         region_name,
+        sns_provider,
+        platform_credentials,
     ):
+        SnsProvider = sns_provider()
         sns_backend = SnsProvider.get_store(account_id, region_name)
         topic_arn = sns_create_topic()["TopicArn"]
 
-        app_arn = sns_create_platform_application(Name="app1", Platform="p1", Attributes={})[
-            "PlatformApplicationArn"
-        ]
+        platform = "ADM"
+        client_id, client_secret = platform_credentials
+        attributes = {"PlatformPrincipal": client_id, "PlatformCredential": client_secret}
+        app_arn = sns_create_platform_application(
+            Name="app1", Platform=platform, Attributes=attributes
+        )["PlatformApplicationArn"]
         platform_arn = aws_client.sns.create_platform_endpoint(
             PlatformApplicationArn=app_arn, Token="token_1"
         )["EndpointArn"]
@@ -3257,11 +4532,16 @@ class TestSNSPlatformEndpoint:
 
     @markers.aws.needs_fixing
     # AWS validating this is hard because we need real credentials for a GCM/Apple mobile app
-    def test_publish_disabled_endpoint(self, sns_create_platform_application, aws_client):
+    def test_publish_disabled_endpoint(
+        self, sns_create_platform_application, aws_client, platform_credentials
+    ):
+        platform = "ADM"
+        client_id, client_secret = platform_credentials
+        attributes = {"PlatformPrincipal": client_id, "PlatformCredential": client_secret}
         response = sns_create_platform_application(
             Name=f"test-{short_uid()}",
-            Platform="GCM",
-            Attributes={"PlatformCredential": "123"},
+            Platform=platform,
+            Attributes=attributes,
         )
         platform_arn = response["PlatformApplicationArn"]
         response = aws_client.sns.create_platform_endpoint(
@@ -3277,12 +4557,20 @@ class TestSNSPlatformEndpoint:
             EndpointArn=endpoint_arn, Attributes={"Enabled": "false"}
         )
 
-        get_attrs = aws_client.sns.get_endpoint_attributes(EndpointArn=endpoint_arn)
-        assert get_attrs["Attributes"]["Enabled"] == "false"
+        retries = 3
+        sleep = 1
+        if is_aws_cloud():
+            retries = 30
+            sleep = 2
 
+        def _assert_endpoint_disabled():
+            get_attrs = aws_client.sns.get_endpoint_attributes(EndpointArn=endpoint_arn)
+            assert get_attrs["Attributes"]["Enabled"] == "false"
+
+        retry(_assert_endpoint_disabled, retries=retries, sleep=sleep)
         with pytest.raises(ClientError) as e:
             message = {
-                "GCM": '{ "notification": {"title": "Title of notification", "body": "It works" } }'
+                platform: '{ "notification": {"title": "Title of notification", "body": "It works" } }'
             }
             aws_client.sns.publish(
                 TargetArn=endpoint_arn, MessageStructure="json", Message=json.dumps(message)
@@ -3319,7 +4607,9 @@ class TestSNSPlatformEndpoint:
             )
         assert ex.value.response["Error"]["Code"] == "InvalidParameter"
 
+    @markers.requires_in_process
     @markers.aws.only_localstack
+    @skip_if_sns_v2
     def test_publish_to_platform_endpoint_is_dispatched(
         self,
         sns_create_topic,
@@ -3328,6 +4618,7 @@ class TestSNSPlatformEndpoint:
         aws_client,
         account_id,
         region_name,
+        sns_provider,
     ):
         topic_arn = sns_create_topic()["TopicArn"]
         endpoints_arn = {}
@@ -3366,7 +4657,7 @@ class TestSNSPlatformEndpoint:
             Message=json.dumps(message),
             MessageStructure="json",
         )
-
+        SnsProvider = sns_provider()
         sns_backend = SnsProvider.get_store(account_id, region_name)
         platform_endpoint_msgs = sns_backend.platform_endpoint_messages
 
@@ -3382,16 +4673,18 @@ class TestSNSPlatformEndpoint:
 
 
 class TestSNSSMS:
+    @markers.requires_in_process
     @markers.aws.only_localstack
-    def test_publish_sms(self, aws_client, account_id, region_name):
+    def test_publish_sms(self, aws_client, account_id, region_name, sns_provider):
         phone_number = "+33000000000"
         response = aws_client.sns.publish(PhoneNumber=phone_number, Message="This is a SMS")
         assert "MessageId" in response
         assert response["ResponseMetadata"]["HTTPStatusCode"] == 200
 
+        SnsProvider = sns_provider()
         sns_backend = SnsProvider.get_store(
-            account_id=account_id,
-            region_name=region_name,
+            account_id,
+            region_name,
         )
 
         def check_messages():
@@ -3417,9 +4710,10 @@ class TestSNSSMS:
         )
         snapshot.match("subscribe-sms-attrs", sub_attrs)
 
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_publish_sms_endpoint(
-        self, sns_create_topic, sns_subscription, aws_client, account_id, region_name
+        self, sns_create_topic, sns_subscription, aws_client, account_id, region_name, sns_provider
     ):
         list_of_contacts = [
             f"+{random.randint(100000000, 9999999999)}",
@@ -3433,6 +4727,7 @@ class TestSNSSMS:
 
         aws_client.sns.publish(Message=message, TopicArn=topic_arn)
 
+        SnsProvider = sns_provider()
         sns_backend = SnsProvider.get_store(account_id, region_name)
 
         def check_messages():
@@ -3468,6 +4763,146 @@ class TestSNSSMS:
             sns_subscription(TopicArn=topic_arn, Protocol="sms", Endpoint="NAA+15551234567")
         snapshot.match("wrong-endpoint", e.value.response)
 
+    @markers.aws.manual_setup_required
+    @pytest.mark.skipif(condition=is_sns_v1_provider(), reason="Not implemented in v1")
+    def test_set_get_sms_attributes(self, aws_client, account_id, snapshot):
+        if is_aws_cloud():
+            LOG.warning(
+                "Warning: this test will permanently set values for sms attributes in this region. \n Removing is not possible, only overwriting.\n Remove the exception if you wish to proceed"
+            )
+            raise Exception("Check logs to enable this test against AWS")
+
+        aws_client.sns.set_sms_attributes(
+            attributes={
+                "DeliveryStatusSuccessSamplingRate": "100",
+                "DefaultSenderID": "LSTest",
+                "DefaultSMSType": "Promotional",
+            }
+        )
+
+        response = aws_client.sns.get_sms_attributes()
+        snapshot.match("get-sms-all-attributes", response)
+
+        response = aws_client.sns.get_sms_attributes(
+            attributes=["DefaultSenderID", "DefaultSMSType"]
+        )
+        snapshot.match("get-sms-some-attributes", response)
+
+    @markers.aws.manual_setup_required
+    @pytest.mark.skipif(condition=is_sns_v1_provider(), reason="Not implemented in v1")
+    def test_get_sms_attributes_from_unmodified_region(
+        self, aws_client_factory, secondary_region_name, snapshot
+    ):
+        # if the secondary region is already modified, you can use SECONDARY_TEST_AWS_PROFILE and similar
+        # variables to change it
+
+        default_spend_limit = "1"
+
+        sns_unmodified_region = aws_client_factory(region_name=secondary_region_name).sns
+        response = sns_unmodified_region.get_sms_attributes()
+        assert response["attributes"]["MonthlySpendLimit"] == default_spend_limit
+        snapshot.match("get-sms-attributes_unmodified_region", response)
+
+    @pytest.mark.parametrize(
+        "attribute_key_value",
+        [
+            ("InvalidAttribute", "invalid"),
+            ("DefaultSendID", "a" * 12),
+            ("DefaultSendID", "123456789"),
+            ("DefaultSMSType", "invalid"),
+        ],
+        ids=["InvalidAttributeName", "TooLongID", "NoLetterID", "InvalidSMSType"],
+    )
+    @markers.aws.validated
+    @pytest.mark.skipif(condition=is_sns_v1_provider(), reason="Not implemented in v1")
+    def test_set_invalid_sms_attributes(self, aws_client, snapshot, attribute_key_value):
+        with pytest.raises(ClientError) as e:
+            aws_client.sns.set_sms_attributes(
+                attributes={
+                    attribute_key_value[0]: attribute_key_value[1],
+                }
+            )
+        snapshot.match("invalid-attribute", e.value.response)
+
+    @markers.aws.manual_setup_required
+    @pytest.mark.skipif(is_sns_v1_provider(), reason="Not correctly implemented in v1")
+    def test_is_phone_number_opted_out(
+        self, phone_number, aws_client, snapshot, sns_provider, account_id, region_name, cleanups
+    ):
+        # this test expects the fixture-provided phone number to be opted out
+        # if you want to test against AWS, you need to manually opt out a number
+        # https://us-east-1.console.aws.amazon.com/sms-voice/home?region=us-east-1#/opt-out-lists?name=Default&tab=opt-out-list-opted-out-numbers
+        sns_store = sns_provider().get_store(account_id, region_name)
+
+        def cleanup_store():
+            sns_store.PHONE_NUMBERS_OPTED_OUT.remove(phone_number)
+
+        if not is_aws_cloud():
+            sns_store.PHONE_NUMBERS_OPTED_OUT.append(phone_number)
+            cleanups.append(cleanup_store)
+
+        response = aws_client.sns.check_if_phone_number_is_opted_out(phoneNumber=phone_number)
+        snapshot.match("phone-number-opted-out", response)
+
+    @markers.aws.manual_setup_required
+    @pytest.mark.skipif(is_sns_v1_provider(), reason="Not correctly implemented in v1")
+    def test_list_phone_numbers_opted_out(
+        self, phone_number, aws_client, snapshot, sns_provider, account_id, region_name, cleanups
+    ):
+        # this test expects exactly one phone number opted out
+        # if you want to test against AWS, you need to manually opt out a number
+        # https://us-east-1.console.aws.amazon.com/sms-voice/home?region=us-east-1#/opt-out-lists?name=Default&tab=opt-out-list-opted-out-numbers
+        sns_store = sns_provider().get_store(account_id, region_name)
+
+        def cleanup_store():
+            sns_store.PHONE_NUMBERS_OPTED_OUT.remove(phone_number)
+
+        if not is_aws_cloud():
+            sns_store.PHONE_NUMBERS_OPTED_OUT.append(phone_number)
+            cleanups.append(cleanup_store)
+
+        snapshot.add_transformer(
+            TransformerUtility.jsonpath(
+                jsonpath="$..phoneNumbers[*]",
+                value_replacement="phone-number",
+            )
+        )
+        response = aws_client.sns.list_phone_numbers_opted_out()
+        snapshot.match("list-phone-numbers-opted-out", response)
+
+    @markers.aws.manual_setup_required
+    @pytest.mark.skipif(is_sns_v1_provider(), reason="Not correctly implemented in v1")
+    def test_opt_in_phone_number(
+        self, phone_number, aws_client, snapshot, sns_provider, account_id, region_name, cleanups
+    ):
+        # this test expects exactly one phone number opted out
+        # if you want to test against AWS, you need to manually opt out a number
+        # https://us-east-1.console.aws.amazon.com/sms-voice/home?region=us-east-1#/opt-out-lists?name=Default&tab=opt-out-list-opted-out-numbers
+        # IMPORTANT: a phone number can only be opted in once every 30 days on AWS.
+        # Make sure everything else is set up and taken care of properly before trying to validate this.
+        sns_store = sns_provider().get_store(account_id, region_name)
+
+        def cleanup_store():
+            sns_store.PHONE_NUMBERS_OPTED_OUT.remove(phone_number)
+
+        if not is_aws_cloud():
+            sns_store.PHONE_NUMBERS_OPTED_OUT.append(phone_number)
+            cleanups.append(cleanup_store)
+        response = aws_client.sns.check_if_phone_number_is_opted_out(phoneNumber=phone_number)
+        assert response["isOptedOut"]
+
+        response = aws_client.sns.opt_in_phone_number(phoneNumber=phone_number)
+        snapshot.match("opt-in-phone-number", response)
+
+    @markers.aws.validated
+    def test_opt_in_non_existing_phone_number(
+        self, phone_number, aws_client, snapshot, sns_provider, account_id, region_name
+    ):
+        non_existing_number = "+4411111111"
+        response = aws_client.sns.opt_in_phone_number(phoneNumber=non_existing_number)
+
+        snapshot.match("opt-in-non-existing-number", response)
+
 
 class TestSNSSubscriptionHttp:
     @markers.aws.validated
@@ -3499,6 +4934,7 @@ class TestSNSSubscriptionHttp:
         )
         snapshot.match("subscription-with-arn", subscription_with_arn)
 
+    @markers.requires_in_process  # uses pytest httpserver
     @markers.aws.manual_setup_required
     def test_redrive_policy_http_subscription(
         self, sns_create_topic, sqs_create_queue, sqs_get_queue_arn, sns_subscription, aws_client
@@ -3547,6 +4983,7 @@ class TestSNSSubscriptionHttp:
         assert message["Type"] == "Notification"
         assert json.loads(message["Message"])["message"] == "test_redrive_policy"
 
+    @markers.requires_in_process  # uses pytest httpserver
     @markers.aws.manual_setup_required
     def test_multiple_subscriptions_http_endpoint(
         self, sns_create_topic, sns_subscription, aws_client
@@ -3632,6 +5069,7 @@ class TestSNSSubscriptionHttp:
             for server in servers:
                 server.stop()
 
+    @markers.requires_in_process  # uses pytest httpserver
     @markers.aws.manual_setup_required
     @pytest.mark.parametrize("raw_message_delivery", [True, False])
     @markers.snapshot.skip_snapshot_verify(
@@ -3814,6 +5252,7 @@ class TestSNSSubscriptionHttp:
         )
         snapshot.match("unsubscribe-request", payload)
 
+    @markers.requires_in_process  # uses pytest httpserver
     @markers.aws.manual_setup_required
     @pytest.mark.parametrize("raw_message_delivery", [True, False])
     def test_dlq_external_http_endpoint(
@@ -3900,6 +5339,7 @@ class TestSNSSubscriptionHttp:
         # AWS doesn't send to the DLQ if the UnsubscribeConfirmation fails to be delivered
         assert "Messages" not in response or response["Messages"] == []
 
+    @markers.requires_in_process  # uses pytest httpserver
     @markers.aws.manual_setup_required
     @pytest.mark.parametrize("raw_message_delivery", [True, False])
     @markers.snapshot.skip_snapshot_verify(
@@ -4305,6 +5745,7 @@ class TestSNSMultiAccounts:
         return secondary_aws_client.sqs
 
     @markers.aws.only_localstack
+    @skip_if_sns_v2
     def test_cross_account_access(self, sns_primary_client, sns_secondary_client, sns_create_topic):
         # Cross-account access is supported for below operations.
         # This list is taken from ActionName param of the AddPermissions operation
@@ -4359,6 +5800,7 @@ class TestSNSMultiAccounts:
         assert sns_secondary_client.delete_topic(TopicArn=topic_arn)
 
     @markers.aws.only_localstack
+    @skip_if_sns_v2
     def test_cross_account_publish_to_sqs(
         self,
         sns_create_topic,
@@ -4482,6 +5924,7 @@ class TestSNSMultiRegions:
         return aws_client_factory(region_name=secondary_region_name).sqs
 
     @markers.aws.validated
+    @skip_if_sns_v2
     def test_cross_region_access(self, sns_region1_client, sns_region2_client, snapshot, cleanups):
         # We do not have a list of supported Cross-region access for operations.
         # This test is validating that Cross-account does not mean Cross-region most of the time
@@ -4596,8 +6039,10 @@ class TestSNSPublishDelivery:
             "$..Attributes.DeliveryPolicy",
             "$..Attributes.EffectiveDeliveryPolicy",
             "$..Attributes.Policy.Statement..Action",  # SNS:Receive is added by moto but not returned in AWS
-        ]
+        ],
+        condition=is_sns_v1_provider,
     )
+    @skip_if_sns_v2
     def test_delivery_lambda(
         self,
         sns_create_topic,
@@ -4764,6 +6209,7 @@ class TestSNSPublishDelivery:
 
 
 class TestSNSCertEndpoint:
+    @markers.requires_in_process
     @markers.aws.only_localstack
     @pytest.mark.parametrize("cert_host", ["", "sns.us-east-1.amazonaws.com"])
     def test_cert_endpoint_host(
@@ -4810,6 +6256,7 @@ class TestSNSCertEndpoint:
 
 @pytest.mark.usefixtures("openapi_validate")
 class TestSNSRetrospectionEndpoints:
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_publish_to_platform_endpoint_can_retrospect(
         self,
@@ -4820,7 +6267,13 @@ class TestSNSRetrospectionEndpoints:
         account_id,
         region_name,
         secondary_region_name,
+        sns_provider,
+        platform_credentials,
     ):
+        platform = "APNS"
+        client_id, client_secret = platform_credentials
+        attributes = {"PlatformPrincipal": client_id, "PlatformCredential": client_secret}
+        SnsProvider = sns_provider()
         sns_backend = SnsProvider.get_store(account_id, region_name)
         # clean up the saved messages
         sns_backend_endpoint_arns = list(sns_backend.platform_endpoint_messages.keys())
@@ -4831,7 +6284,7 @@ class TestSNSRetrospectionEndpoints:
         application_platform_name = f"app-platform-{short_uid()}"
 
         app_arn = sns_create_platform_application(
-            Name=application_platform_name, Platform="APNS", Attributes={}
+            Name=application_platform_name, Platform=platform, Attributes=attributes
         )["PlatformApplicationArn"]
 
         endpoint_arn = aws_client.sns.create_platform_endpoint(
@@ -4966,6 +6419,7 @@ class TestSNSRetrospectionEndpoints:
         ).json()
         assert not msg_with_region["platform_endpoint_messages"]
 
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_publish_sms_can_retrospect(
         self,
@@ -4975,7 +6429,9 @@ class TestSNSRetrospectionEndpoints:
         account_id,
         region_name,
         secondary_region_name,
+        sns_provider,
     ):
+        SnsProvider = sns_provider()
         sns_store = SnsProvider.get_store(account_id, region_name)
 
         list_of_contacts = [
@@ -5069,6 +6525,7 @@ class TestSNSRetrospectionEndpoints:
         msg_with_region = requests.get(msgs_url, params={"region": region_name}).json()
         assert not msg_with_region["sms_messages"]
 
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_subscription_tokens_can_retrospect(
         self,
@@ -5078,7 +6535,9 @@ class TestSNSRetrospectionEndpoints:
         aws_client,
         account_id,
         region_name,
+        sns_provider,
     ):
+        SnsProvider = sns_provider()
         sns_store = SnsProvider.get_store(account_id, region_name)
         # clean up the saved tokens
         sns_store.subscription_tokens.clear()

@@ -62,6 +62,7 @@ from localstack.http import Resource, Response
 from localstack.services.moto import call_moto
 from localstack.services.plugins import ServiceLifecycleHook
 from localstack.services.ses.models import EmailType, SentEmail, SentEmailBody
+from localstack.state import StateVisitor
 from localstack.utils.aws import arns
 from localstack.utils.files import mkdir
 from localstack.utils.strings import long_uid, to_str
@@ -177,11 +178,16 @@ def register_ses_api_resource():
 
 
 class SesProvider(SesApi, ServiceLifecycleHook):
+    def accept_state_visitor(self, visitor: StateVisitor):
+        visitor.visit(ses_backends)
+
     #
     # Lifecycle Hooks
     #
 
     def on_after_init(self):
+        self._apply_patches()
+
         # Allow sent emails to be retrieved from the SES emails endpoint
         register_ses_api_resource()
 
@@ -196,6 +202,12 @@ class SesProvider(SesApi, ServiceLifecycleHook):
             if "From:" in entity:
                 return entity.replace("From:", "").strip()
         return None
+
+    def _apply_patches(self) -> None:
+        # Suppress Moto's validation of receipt rule actions. These validations use Moto's implementation of S3, Lambda
+        # and SQS, which fail because these services have been internalised in LocalStack.
+        # Besides, AWS does not run the same validations as evidenced by our AWS-validated tests.
+        SESBackend._validate_receipt_rule_actions = lambda *_: None
 
     #
     # Implementations for SES operations
@@ -517,8 +529,10 @@ class SesProvider(SesApi, ServiceLifecycleHook):
         backend.create_receipt_rule_set(rule_set_name)
         original_rule_set = backend.describe_receipt_rule_set(original_rule_set_name)
 
-        for rule in original_rule_set:
-            backend.create_receipt_rule(rule_set_name, rule)
+        after = None
+        for rule in original_rule_set.rules:
+            backend.create_receipt_rule(rule_set_name, rule, after)
+            after = rule["Name"]
 
         return CloneReceiptRuleSetResponse()
 
@@ -547,7 +561,7 @@ class SesProvider(SesApi, ServiceLifecycleHook):
             )
 
         backend = get_ses_backend(context)
-        if identity not in backend.addresses:
+        if identity not in backend.email_identities:
             raise MessageRejected(f"Identity {identity} is not verified or does not exist.")
 
         # Store the setting in the backend
@@ -677,7 +691,7 @@ class SNSEmitter:
 def notify_event_destinations(
     context: RequestContext,
     # FIXME: Moto stores the Event Destinations as a single value when it should be a list
-    event_destinations: dict,
+    event_destinations: EventDestination | list[EventDestination],
     payload: EventDestinationPayload,
     email_type: EmailType,
 ):
@@ -690,11 +704,11 @@ def notify_event_destinations(
         if not event_destination["Enabled"]:
             continue
 
-        sns_destination_arn = event_destination.get("SNSDestination")
+        sns_destination_arn = event_destination.get("SNSDestination", {}).get("TopicARN")
         if not sns_destination_arn:
             continue
 
-        matching_event_types = event_destination.get("EventMatchingTypes") or []
+        matching_event_types = event_destination.get("MatchingEventTypes") or []
         if EventType.send in matching_event_types:
             emitter.emit_send_event(
                 payload, sns_destination_arn, emit_source_arn=email_type != EmailType.TEMPLATED

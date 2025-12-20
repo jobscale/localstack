@@ -7,9 +7,10 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from functools import lru_cache
 from queue import Queue
-from typing import Any, AnyStr, Callable, Optional, Union
+from typing import Any, AnyStr
 
 from localstack import config
 
@@ -23,19 +24,19 @@ LOG = logging.getLogger(__name__)
 
 
 def run(
-    cmd: Union[str, list[str]],
+    cmd: str | list[str],
     print_error=True,
     asynchronous=False,
     stdin=False,
     stderr=subprocess.STDOUT,
     outfile=None,
-    env_vars: Optional[dict[AnyStr, AnyStr]] = None,
+    env_vars: dict[AnyStr, AnyStr] | None = None,
     inherit_cwd=False,
     inherit_env=True,
     tty=False,
     shell=True,
     cwd: str = None,
-) -> Union[str, subprocess.Popen]:
+) -> str | subprocess.Popen:
     LOG.debug("Executing command: %s", cmd)
     env_dict = os.environ.copy() if inherit_env else {}
     if env_vars:
@@ -114,7 +115,7 @@ def run(
         return process
     except subprocess.CalledProcessError as e:
         if print_error:
-            print("ERROR: '%s': exit code %s; output: %s" % (cmd, e.returncode, e.output))
+            print(f"ERROR: '{cmd}': exit code {e.returncode}; output: {e.output}")
             sys.stdout.flush()
         raise e
 
@@ -202,7 +203,7 @@ def get_os_user() -> str:
     return run("whoami").strip()
 
 
-def to_str(obj: Union[str, bytes], errors="strict"):
+def to_str(obj: str | bytes, errors="strict"):
     return obj.decode(config.DEFAULT_ENCODING, errors) if isinstance(obj, bytes) else obj
 
 
@@ -211,9 +212,9 @@ class ShellCommandThread(FuncThread):
 
     def __init__(
         self,
-        cmd: Union[str, list[str]],
+        cmd: str | list[str],
         params: Any = None,
-        outfile: Union[str, int] = None,
+        outfile: str | int = None,
         env_vars: dict[str, str] = None,
         stdin: bool = False,
         auto_restart: bool = False,
@@ -223,8 +224,8 @@ class ShellCommandThread(FuncThread):
         log_listener: Callable = None,
         stop_listener: Callable = None,
         strip_color: bool = False,
-        name: Optional[str] = None,
-        cwd: Optional[str] = None,
+        name: str | None = None,
+        cwd: str | None = None,
     ):
         params = params if params is not None else {}
         env_vars = env_vars if env_vars is not None else {}
@@ -268,7 +269,7 @@ class ShellCommandThread(FuncThread):
             if self.strip_color:
                 # strip color codes
                 line = re.sub(r"\x1b(\[.*?[@-~]|\].*?(\x07|\x1b\\))", "", line)
-            return "%s\r\n" % line.strip()
+            return f"{line.strip()}\r\n"
 
         def filter_line(line):
             """Return True if this line should be filtered, i.e., not printed"""

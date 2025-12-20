@@ -61,11 +61,9 @@ if TYPE_CHECKING:
     from mypy_boto3_identitystore import IdentityStoreClient
     from mypy_boto3_iot import IoTClient
     from mypy_boto3_iot_data import IoTDataPlaneClient
-    from mypy_boto3_iotanalytics import IoTAnalyticsClient
     from mypy_boto3_iotwireless import IoTWirelessClient
     from mypy_boto3_kafka import KafkaClient
     from mypy_boto3_kinesis import KinesisClient
-    from mypy_boto3_kinesisanalytics import KinesisAnalyticsClient
     from mypy_boto3_kinesisanalyticsv2 import KinesisAnalyticsV2Client
     from mypy_boto3_kms import KMSClient
     from mypy_boto3_lakeformation import LakeFormationClient
@@ -73,7 +71,6 @@ if TYPE_CHECKING:
     from mypy_boto3_logs import CloudWatchLogsClient
     from mypy_boto3_managedblockchain import ManagedBlockchainClient
     from mypy_boto3_mediaconvert import MediaConvertClient
-    from mypy_boto3_mediastore import MediaStoreClient
     from mypy_boto3_mq import MQClient
     from mypy_boto3_mwaa import MWAAClient
     from mypy_boto3_neptune import NeptuneClient
@@ -82,8 +79,6 @@ if TYPE_CHECKING:
     from mypy_boto3_pi import PIClient
     from mypy_boto3_pinpoint import PinpointClient
     from mypy_boto3_pipes import EventBridgePipesClient
-    from mypy_boto3_qldb import QLDBClient
-    from mypy_boto3_qldb_session import QLDBSessionClient
     from mypy_boto3_rds import RDSClient
     from mypy_boto3_rds_data import RDSDataServiceClient
     from mypy_boto3_redshift import RedshiftClient
@@ -187,13 +182,9 @@ class TypedServiceClientFactory(abc.ABC):
     identitystore: Union["IdentityStoreClient", "MetadataRequestInjector[IdentityStoreClient]"]
     iot: Union["IoTClient", "MetadataRequestInjector[IoTClient]"]
     iot_data: Union["IoTDataPlaneClient", "MetadataRequestInjector[IoTDataPlaneClient]"]
-    iotanalytics: Union["IoTAnalyticsClient", "MetadataRequestInjector[IoTAnalyticsClient]"]
     iotwireless: Union["IoTWirelessClient", "MetadataRequestInjector[IoTWirelessClient]"]
     kafka: Union["KafkaClient", "MetadataRequestInjector[KafkaClient]"]
     kinesis: Union["KinesisClient", "MetadataRequestInjector[KinesisClient]"]
-    kinesisanalytics: Union[
-        "KinesisAnalyticsClient", "MetadataRequestInjector[KinesisAnalyticsClient]"
-    ]
     kinesisanalyticsv2: Union[
         "KinesisAnalyticsV2Client", "MetadataRequestInjector[KinesisAnalyticsV2Client]"
     ]
@@ -205,7 +196,6 @@ class TypedServiceClientFactory(abc.ABC):
         "ManagedBlockchainClient", "MetadataRequestInjector[ManagedBlockchainClient]"
     ]
     mediaconvert: Union["MediaConvertClient", "MetadataRequestInjector[MediaConvertClient]"]
-    mediastore: Union["MediaStoreClient", "MetadataRequestInjector[MediaStoreClient]"]
     mq: Union["MQClient", "MetadataRequestInjector[MQClient]"]
     mwaa: Union["MWAAClient", "MetadataRequestInjector[MWAAClient]"]
     neptune: Union["NeptuneClient", "MetadataRequestInjector[NeptuneClient]"]
@@ -214,8 +204,6 @@ class TypedServiceClientFactory(abc.ABC):
     pi: Union["PIClient", "MetadataRequestInjector[PIClient]"]
     pinpoint: Union["PinpointClient", "MetadataRequestInjector[PinpointClient]"]
     pipes: Union["EventBridgePipesClient", "MetadataRequestInjector[EventBridgePipesClient]"]
-    qldb: Union["QLDBClient", "MetadataRequestInjector[QLDBClient]"]
-    qldb_session: Union["QLDBSessionClient", "MetadataRequestInjector[QLDBSessionClient]"]
     rds: Union["RDSClient", "MetadataRequestInjector[RDSClient]"]
     rds_data: Union["RDSDataServiceClient", "MetadataRequestInjector[RDSDataServiceClient]"]
     redshift: Union["RedshiftClient", "MetadataRequestInjector[RedshiftClient]"]
@@ -285,6 +273,8 @@ class ServicePrincipal(str):
     appsync = "appsync"
     cloudformation = "cloudformation"
     dms = "dms"
+    ecs = "ecs"
+    ecs_tasks = "ecs-tasks"
     edgelambda = "edgelambda"
     elasticloadbalancing = "elasticloadbalancing"
     events = "events"

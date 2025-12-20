@@ -301,6 +301,7 @@ class TestAPIGateway:
     @pytest.mark.parametrize("disable_custom_cors", [True, False])
     @pytest.mark.parametrize("origin", ["http://allowed", "http://denied"])
     @markers.aws.only_localstack
+    @markers.requires_in_process
     def test_invoke_endpoint_cors_headers(
         self, url_type, disable_custom_cors, origin, monkeypatch, aws_client
     ):
@@ -643,7 +644,7 @@ class TestAPIGateway:
             restApiId=get_api_gateway_id, authorizerId=authorizer_id
         )
 
-        with pytest.raises(Exception):
+        with pytest.raises(ClientError):
             aws_client.apigateway.get_authorizer(
                 restApiId=get_api_gateway_id, authorizerId=authorizer_id
             )
@@ -784,9 +785,9 @@ class TestAPIGateway:
 
         # DELETE
         aws_client.apigateway.delete_base_path_mapping(domainName=domain_name, basePath=base_path)
-        with pytest.raises(Exception):
+        with pytest.raises(ClientError):
             aws_client.apigateway.get_base_path_mapping(domainName=domain_name, basePath=base_path)
-        with pytest.raises(Exception):
+        with pytest.raises(ClientError):
             aws_client.apigateway.delete_base_path_mapping(
                 domainName=domain_name, basePath=base_path
             )
@@ -840,9 +841,9 @@ class TestAPIGateway:
 
         # DELETE
         client.delete_base_path_mapping(domainName=domain_name, basePath=base_path)
-        with pytest.raises(Exception):
+        with pytest.raises(ClientError):
             client.get_base_path_mapping(domainName=domain_name, basePath=base_path)
-        with pytest.raises(Exception):
+        with pytest.raises(ClientError):
             client.delete_base_path_mapping(domainName=domain_name, basePath=base_path)
 
     @markers.aws.needs_fixing

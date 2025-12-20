@@ -109,5 +109,171 @@
         }
       }
     }
+  },
+  "tests/aws/services/cloudformation/api/test_templates.py::test_get_template_summary_non_executed_change_set": {
+    "recorded-date": "10-09-2025, 23:25:47",
+    "recorded-content": {
+      "error": {
+        "Error": {
+          "Code": "ValidationError",
+          "Message": "GetTemplateSummary cannot be called on REVIEW_IN_PROGRESS stacks.",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/aws/services/cloudformation/api/test_templates.py::test_get_template_missing_resources": {
+    "recorded-date": "12-09-2025, 16:08:17",
+    "recorded-content": {
+      "stack-error": {
+        "Error": {
+          "Code": "ValidationError",
+          "Message": "Stack with id does-not-exist does not exist",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "change-set-error": {
+        "Error": {
+          "Code": "ValidationError",
+          "Message": "StackName is a required parameter.",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/aws/services/cloudformation/api/test_templates.py::test_get_template_missing_resources_stack": {
+    "recorded-date": "12-09-2025, 16:08:42",
+    "recorded-content": {
+      "stack-error": {
+        "Error": {
+          "Code": "ValidationError",
+          "Message": "Stack with id does-not-exist does not exist",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/aws/services/cloudformation/api/test_templates.py::test_get_template_missing_resources_change_set": {
+    "recorded-date": "12-09-2025, 16:08:55",
+    "recorded-content": {
+      "change-set-error": {
+        "Error": {
+          "Code": "ValidationError",
+          "Message": "StackName is a required parameter.",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/aws/services/cloudformation/api/test_templates.py::test_get_template_missing_resources_change_set_id": {
+    "recorded-date": "12-09-2025, 17:32:31",
+    "recorded-content": {
+      "change-set-error": {
+        "Error": {
+          "Code": "ChangeSetNotFound",
+          "Message": "ChangeSet [<change-set-id>] does not exist",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 404
+        }
+      }
+    }
+  },
+  "tests/aws/services/cloudformation/api/test_templates.py::test_get_template_summary_no_resources": {
+    "recorded-date": "07-10-2025, 22:28:52",
+    "recorded-content": {
+      "error": {
+        "Error": {
+          "Code": "ValidationError",
+          "Message": "Template format error: At least one Resources member must be defined.",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/aws/services/cloudformation/api/test_templates.py::test_get_template_summary_failed_stack": {
+    "recorded-date": "07-10-2025, 22:44:53",
+    "recorded-content": {
+      "template-summary": {
+        "Parameters": [],
+        "ResourceIdentifierSummaries": [
+          {
+            "LogicalResourceIds": [
+              "MyParameter"
+            ],
+            "ResourceIdentifiers": [
+              "Name"
+            ],
+            "ResourceType": "AWS::SSM::Parameter"
+          }
+        ],
+        "ResourceTypes": [
+          "AWS::SSM::Parameter"
+        ],
+        "Version": "2010-09-09",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/cloudformation/api/test_templates.py::test_get_template_no_arguments": {
+    "recorded-date": "13-11-2025, 16:48:31",
+    "recorded-content": {
+      "stack-error": {
+        "Error": {
+          "Code": "ValidationError",
+          "Message": "StackName is required if ChangeSetName is not specified.",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/aws/services/cloudformation/api/test_templates.py::test_create_stack_invalid_yaml_template_should_fail": {
+    "recorded-date": "13-11-2025, 11:36:51",
+    "recorded-content": {
+      "create-invalid-yaml": {
+        "Error": {
+          "Code": "ValidationError",
+          "Message": "Template format error: YAML not well-formed.",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
   }
 }

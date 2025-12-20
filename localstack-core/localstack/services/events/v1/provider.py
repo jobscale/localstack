@@ -45,6 +45,7 @@ from localstack.services.events.scheduler import JobScheduler
 from localstack.services.events.v1.models import EventsStore, events_stores
 from localstack.services.moto import call_moto
 from localstack.services.plugins import ServiceLifecycleHook
+from localstack.state import StateVisitor
 from localstack.utils.aws.arns import event_bus_arn, parse_arn
 from localstack.utils.aws.client_types import ServicePrincipal
 from localstack.utils.aws.message_forwarding import send_event_to_target
@@ -82,6 +83,14 @@ class EventsProvider(EventsApi, ServiceLifecycleHook):
 
     def on_before_stop(self):
         JobScheduler.shutdown()
+
+    def accept_state_visitor(self, visitor: StateVisitor):
+        from moto.events.models import events_backends
+
+        from localstack.services.events.v1.models import events_stores
+
+        visitor.visit(events_backends)
+        visitor.visit(events_stores)
 
     @route("/_aws/events/rules/<path:rule_arn>/trigger")
     def trigger_scheduled_rule(self, request: Request, rule_arn: str):
@@ -206,12 +215,12 @@ class EventsProvider(EventsApi, ServiceLifecycleHook):
                 raise ValueError("If the value is greater than 1, the unit must be plural")
 
             if "minute" in unit:
-                return "*/%s * * * *" % value
+                return f"*/{value} * * * *"
             if "hour" in unit:
-                return "0 */%s * * *" % value
+                return f"0 */{value} * * *"
             if "day" in unit:
-                return "0 0 */%s * *" % value
-            raise ValueError("Unable to parse events schedule expression: %s" % schedule)
+                return f"0 0 */{value} * *"
+            raise ValueError(f"Unable to parse events schedule expression: {schedule}")
         return schedule
 
     @staticmethod
@@ -374,7 +383,7 @@ def _dump_events_to_files(events_with_added_uuid):
         for event in events_with_added_uuid:
             target = os.path.join(
                 _get_events_tmp_dir(),
-                "%s_%s" % (current_time_millis, event["uuid"]),
+                "{}_{}".format(current_time_millis, event["uuid"]),
             )
             save_file(target, json.dumps(event["event"]))
     except Exception as e:

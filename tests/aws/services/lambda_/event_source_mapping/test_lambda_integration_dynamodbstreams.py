@@ -309,7 +309,7 @@ class TestDynamoDBEventSourceMapping:
         retry(
             check_expected_lambda_log_events_length,
             retries=10,
-            sleep=3,
+            sleep=5 if is_aws_cloud() else 1,
             function_name=function_name,
             expected_length=1,
             logs_client=aws_client.logs,
@@ -371,12 +371,6 @@ class TestDynamoDBEventSourceMapping:
         list_esm = aws_client.lambda_.list_event_source_mappings(EventSourceArn=latest_stream_arn)
         snapshot.match("list_event_source_mapping_result", list_esm)
 
-    # TODO re-record snapshot, now TableId is returned but new WarmThroughput property is not
-    @markers.snapshot.skip_snapshot_verify(
-        paths=[
-            "$..TableDescription.TableId",
-        ],
-    )
     @markers.aws.validated
     def test_dynamodb_event_source_mapping_with_sns_on_failure_destination_config(
         self,
@@ -486,12 +480,6 @@ class TestDynamoDBEventSourceMapping:
 
         snapshot.match("failure_sns_message", failure_sns_message)
 
-    # TODO re-record snapshot, now TableId is returned but new WarmThroughput property is not
-    @markers.snapshot.skip_snapshot_verify(
-        paths=[
-            "$..TableDescription.TableId",
-        ],
-    )
     @markers.aws.validated
     def test_dynamodb_event_source_mapping_with_on_failure_destination_config(
         self,
@@ -572,10 +560,8 @@ class TestDynamoDBEventSourceMapping:
         messages = retry(verify_failure_received, retries=15, sleep=sleep, sleep_before=5)
         snapshot.match("destination_queue_messages", messages)
 
-    # FIXME UpdateTable is not returning a WarmThroughput property
     @markers.snapshot.skip_snapshot_verify(
         paths=[
-            "$..TableDescription.WarmThroughput",
             "$..requestContext.requestId",  # TODO there is an extra uuid in the snapshot when run in CI on itest-ddb-v2-provider step, need to look why
         ],
     )
@@ -948,7 +934,6 @@ class TestDynamoDBEventSourceMapping:
 
     @markers.snapshot.skip_snapshot_verify(
         paths=[
-            "$..TableDescription.TableId",
             "$..Records",  # TODO Figure out why there is an extra log record
         ],
     )
@@ -1095,6 +1080,8 @@ class TestDynamoDBEventSourceMapping:
     ):
         snapshot.add_transformer(snapshot.transform.key_value("MD5OfBody"))
         snapshot.add_transformer(snapshot.transform.key_value("ReceiptHandle"))
+        snapshot.add_transformer(snapshot.transform.key_value("startSequenceNumber"))
+        snapshot.add_transformer(snapshot.transform.key_value("endSequenceNumber"))
 
         function_name = f"lambda_func-{short_uid()}"
         table_name = f"test-table-{short_uid()}"
@@ -1149,11 +1136,14 @@ class TestDynamoDBEventSourceMapping:
         messages = retry(verify_failure_received, retries=15, sleep=sleep, sleep_before=5)
         snapshot.match("destination_queue_messages", messages)
 
-        events = get_lambda_log_events(function_name, logs_client=aws_client.logs)
-
         # This will filter out exception messages being added to the log stream
-        invocation_events = [event for event in events if "Records" in event]
-        snapshot.match("dynamodb_events", invocation_events)
+        def _get_events():
+            events = get_lambda_log_events(function_name, logs_client=aws_client.logs)
+            invocation_events = [event for event in events if "Records" in event]
+            assert len(invocation_events) == 4
+            return invocation_events
+
+        snapshot.match("dynamodb_events", retry(_get_events, retries=10))
 
     @markers.aws.validated
     @pytest.mark.parametrize(

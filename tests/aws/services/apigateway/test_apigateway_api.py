@@ -3,6 +3,7 @@ import logging
 import os.path
 import time
 from operator import itemgetter
+from typing import TYPE_CHECKING, Unpack
 
 import pytest
 from botocore.config import Config
@@ -10,6 +11,7 @@ from botocore.exceptions import ClientError
 from localstack_snapshot.snapshots.transformer import SortingTransformer
 
 from localstack.aws.api.apigateway import PutMode
+from localstack.aws.connect import ServiceLevelClientFactory
 from localstack.testing.aws.util import is_aws_cloud
 from localstack.testing.pytest import markers
 from localstack.utils.files import load_file
@@ -23,6 +25,10 @@ from tests.aws.services.apigateway.apigateway_fixtures import (
     create_rest_resource_method,
 )
 from tests.aws.services.apigateway.conftest import is_next_gen_api
+
+if TYPE_CHECKING:
+    from mypy_boto3_apigateway.type_defs import CreateVpcLinkRequestTypeDef, VpcLinkResponseTypeDef
+
 
 LOG = logging.getLogger(__name__)
 
@@ -96,6 +102,28 @@ def apigw_create_rest_api(aws_client, aws_client_factory):
 
     for rest_api_id in rest_apis:
         delete_rest_api_retry(apigateway_client, rest_api_id)
+
+
+@pytest.fixture
+def apigw_create_vpc_link(aws_client):
+    vpc_links: list[tuple[ServiceLevelClientFactory, str]] = []
+
+    def _create_vpc_link(
+        client: ServiceLevelClientFactory | None = None,
+        **kwargs: Unpack["CreateVpcLinkRequestTypeDef"],
+    ) -> "VpcLinkResponseTypeDef":
+        client = client or aws_client
+        vpc_link = client.apigateway.create_vpc_link(**kwargs)
+        vpc_links.append((client, vpc_link["id"]))
+        return vpc_link
+
+    yield _create_vpc_link
+
+    for _client, vpc_link_id in vpc_links:
+        try:
+            _client.apigateway.delete_vpc_link(vpcLinkId=vpc_link_id)
+        except ClientError as e:
+            LOG.error("Error deleting VPC link: %s", e)
 
 
 class TestApiGatewayApiRestApi:
@@ -849,6 +877,33 @@ class TestApiGatewayApiResource:
                 restApiId=api_id, resourceId=subresource_id, patchOperations=patch_operations
             )
         snapshot.match("add-unsupported", e.value.response)
+
+    @markers.aws.validated
+    def test_update_resource_on_root(self, apigw_create_rest_api, snapshot, aws_client):
+        snapshot.add_transformer(SortingTransformer("items", lambda x: x["path"]))
+        response = apigw_create_rest_api(
+            name=f"test-api-{short_uid()}", description="testing resource behaviour"
+        )
+        api_id = response["id"]
+        root_id = response["rootResourceId"]
+
+        patch_operations = [
+            {"op": "replace", "path": "/pathPart", "value": "dogs"},
+        ]
+        with pytest.raises(ClientError) as e:
+            aws_client.apigateway.update_resource(
+                restApiId=api_id, resourceId=root_id, patchOperations=patch_operations
+            )
+        snapshot.match("update-root-path-part", e.value.response)
+
+        patch_operations = [
+            {"op": "replace", "path": "/parentId", "value": root_id},
+        ]
+        with pytest.raises(ClientError) as e:
+            aws_client.apigateway.update_resource(
+                restApiId=api_id, resourceId=root_id, patchOperations=patch_operations
+            )
+        snapshot.match("update-root-parent", e.value.response)
 
     @markers.aws.validated
     def test_delete_resource(self, apigw_create_rest_api, snapshot, aws_client):
@@ -2253,6 +2308,34 @@ class TestApiGatewayApiDocumentationPart:
         )
         snapshot.match("import-documentation-parts", response)
 
+    @markers.aws.validated
+    def test_import_documentation_parts_bad_file(self, aws_client, apigw_create_rest_api, snapshot):
+        rest_api_id = apigw_create_rest_api(
+            name=f"test-api-{short_uid()}",
+            description="APIGW test import documentation",
+        )["id"]
+
+        bad_yaml_string = """test:
+    value:
+        - "value ... \"escaped\": $var, \"dt\": $(var +"%a")}\"
+        """
+
+        with pytest.raises(ClientError) as e:
+            aws_client.apigateway.import_documentation_parts(
+                restApiId=rest_api_id,
+                mode=PutMode.overwrite,
+                body=bad_yaml_string,
+            )
+        snapshot.match("import-documentation-parts-bad-yaml-file", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.apigateway.import_documentation_parts(
+                restApiId=rest_api_id,
+                mode=PutMode.overwrite,
+                body="{'key:value}",
+            )
+        snapshot.match("import-documentation-parts-bad-json-file", e.value.response)
+
 
 class TestApiGatewayGatewayResponse:
     @markers.aws.validated
@@ -2597,6 +2680,135 @@ class TestApiGatewayGatewayResponse:
             )
 
 
+class TestApiGatewayVpcLink:
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(paths=["$.update_vpc_link.tags", "$.get_vpc_link.tags"])
+    def test_vpc_link_lifecycle(
+        self,
+        aws_client,
+        snapshot,
+        cleanups,
+        default_vpc,
+        region_name,
+        apigw_create_vpc_link,
+        account_id,
+    ):
+        snapshot.add_transformer(snapshot.transform.key_value("nlb-arn"))
+
+        retries = 240 if is_aws_cloud() else 3
+        sleep = 3 if is_aws_cloud() else 1
+
+        if is_aws_cloud():
+            vpc_id = default_vpc["VpcId"]
+            subnets = aws_client.ec2.describe_subnets(
+                Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+            )["Subnets"]
+            # require at least 2 subnets for the NLB
+            assert len(subnets) >= 2
+            nlb = aws_client.elbv2.create_load_balancer(
+                Name=f"nlb-{short_uid()}",
+                Type="network",
+                Subnets=[subnets[0]["SubnetId"], subnets[1]["SubnetId"]],
+            )["LoadBalancers"][0]
+            nlb_arn = nlb["LoadBalancerArn"]
+            cleanups.append(lambda: aws_client.elbv2.delete_load_balancer(LoadBalancerArn=nlb_arn))
+            waiter = aws_client.elbv2.get_waiter("load_balancer_available")
+            waiter.wait(
+                LoadBalancerArns=[nlb_arn], WaiterConfig={"Delay": sleep, "MaxAttempts": retries}
+            )
+        else:
+            # ElbV2 is not available in community, so we just use a dummy arn
+            nlb_arn = f"arn:aws:elasticloadbalancing:{region_name}:{account_id}:loadbalancer/net/my-load-balancer/50dc6c495c0c9188"
+
+        snapshot.match("nlb-arn", nlb_arn)
+
+        # create vpc link
+        vpc_link_name = f"test-vpc-link-{short_uid()}"
+        create_vpc_link_response = apigw_create_vpc_link(name=vpc_link_name, targetArns=[nlb_arn])
+        snapshot.match("create_vpc_link", create_vpc_link_response)
+        vpc_link_id = create_vpc_link_response["id"]
+
+        # get vpc link
+        # AWS needs some time to make the VPC link available
+        def _wait_for_vpc_link_available():
+            get_vpc_link_response = aws_client.apigateway.get_vpc_link(vpcLinkId=vpc_link_id)
+            assert get_vpc_link_response["status"] == "AVAILABLE"
+            return get_vpc_link_response
+
+        vpc_link_response = retry(_wait_for_vpc_link_available, retries=retries, sleep=sleep)
+        snapshot.match("get_vpc_link", vpc_link_response)
+
+        # get vpc links
+        get_vpc_links_response = aws_client.apigateway.get_vpc_links()
+        # for the snapshot to be stable, we need to filter for the VPC link we created
+        get_vpc_links_response["items"] = [
+            item for item in get_vpc_links_response["items"] if item["id"] == vpc_link_id
+        ]
+        snapshot.match("get_vpc_links", get_vpc_links_response)
+
+        # update vpc link
+        patch_operations = [
+            {"op": "replace", "path": "/name", "value": f"{vpc_link_name}-updated"},
+        ]
+        update_vpc_link_response = aws_client.apigateway.update_vpc_link(
+            vpcLinkId=vpc_link_id, patchOperations=patch_operations
+        )
+        snapshot.match("update_vpc_link", update_vpc_link_response)
+
+        delete_response = aws_client.apigateway.delete_vpc_link(vpcLinkId=vpc_link_id)
+        snapshot.match("delete_vpc_link", delete_response)
+
+        def _wait_for_deleted():
+            try:
+                vpc_link = aws_client.apigateway.get_vpc_link(vpcLinkId=vpc_link_id)
+                # this assertion shouldn't happen, but this will ensure failure if the vpc link is still being deleted
+                assert vpc_link["status"] == "DELETED"
+            except aws_client.apigateway.exceptions.NotFoundException:
+                pass
+
+        # waiting for delete, as it takes a long time and would prevent NLB deletion
+        retry(_wait_for_deleted, retries=retries, sleep=sleep)
+
+    @markers.aws.validated
+    def test_create_vpc_link_invalid_parameters(self, aws_client, snapshot):
+        with pytest.raises(ClientError) as e:
+            aws_client.apigateway.create_vpc_link(
+                name=f"test-vpc-link-{short_uid()}",
+                targetArns=["invalid-arn"],
+            )
+        snapshot.match("create_vpc_link_invalid_target_arn", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.apigateway.create_vpc_link(
+                name="",
+                targetArns=[],
+            )
+        snapshot.match("create_vpc_link_empty_name", e.value.response)
+
+    @markers.aws.validated
+    def test_get_vpc_link_invalid_id(self, aws_client, snapshot):
+        with pytest.raises(ClientError) as e:
+            aws_client.apigateway.get_vpc_link(vpcLinkId="invalid-id")
+        snapshot.match("get_vpc_link_invalid_id", e.value.response)
+
+    @markers.aws.validated
+    def test_delete_vpc_link_invalid_id(self, aws_client, snapshot):
+        with pytest.raises(ClientError) as e:
+            aws_client.apigateway.delete_vpc_link(vpcLinkId="invalid-id")
+        snapshot.match("delete_vpc_link_invalid_id", e.value.response)
+
+    @markers.aws.validated
+    def test_update_vpc_link_invalid_id(self, aws_client, snapshot):
+        patch_operations = [
+            {"op": "replace", "path": "/name", "value": "new-name"},
+        ]
+        with pytest.raises(ClientError) as e:
+            aws_client.apigateway.update_vpc_link(
+                vpcLinkId="invalid-id", patchOperations=patch_operations
+            )
+        snapshot.match("update_vpc_link_invalid_id", e.value.response)
+
+
 class TestApigatewayTestInvoke:
     @markers.aws.validated
     def test_invoke_test_method(
@@ -2857,7 +3069,18 @@ class TestApigatewayTestInvoke:
             apigw_test_invoke_response_formatter(response),
         )
 
-        # assert resource and rest api doesn't exist
+        # assert method doesn't exist
+        with pytest.raises(ClientError) as ex:
+            aws_client.apigateway.test_invoke_method(
+                restApiId=rest_api_id,
+                resourceId=resource_id,
+                httpMethod="HEAD",
+                pathWithQueryString="/pets/123",
+                body=json.dumps({"foo": "bar"}),
+            )
+        snapshot.match("resource-method-not-found", ex.value.response)
+
+        # assert resource doesn't exist
         with pytest.raises(ClientError) as ex:
             aws_client.apigateway.test_invoke_method(
                 restApiId=rest_api_id,
@@ -2868,6 +3091,7 @@ class TestApigatewayTestInvoke:
             )
         snapshot.match("resource-id-not-found", ex.value.response)
 
+        # assert API doesn't exist
         with pytest.raises(ClientError) as ex:
             aws_client.apigateway.test_invoke_method(
                 restApiId=rest_api_id,
@@ -2877,6 +3101,69 @@ class TestApigatewayTestInvoke:
                 body=json.dumps({"foo": "bar"}),
             )
         snapshot.match("rest-api-not-found", ex.value.response)
+
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        # TODO: our way of handling logs for TestInvokeMethod is too naive to properly handle all
+        #  type of exceptions (we'll need to build logs as we progress through the invocation)
+        paths=[
+            "$..log.line07",
+        ]
+    )
+    def test_failed_invoke_test_method(
+        self, create_rest_apigw, snapshot, aws_client, apigw_test_invoke_response_formatter
+    ):
+        rest_api_id, _, root_resource_id = create_rest_apigw(name="test failed invoke")
+
+        aws_client.apigateway.put_method(
+            restApiId=rest_api_id,
+            resourceId=root_resource_id,
+            httpMethod="ANY",
+            authorizationType="NONE",
+        )
+
+        aws_client.apigateway.put_integration(
+            restApiId=rest_api_id,
+            resourceId=root_resource_id,
+            httpMethod="ANY",
+            type="HTTP_PROXY",
+            uri="https://${stageVariables.testHost}",
+            integrationHttpMethod="ANY",
+        )
+        # we are going to not declare this stage variable on purpose to make the call fail
+
+        def invoke_method(
+            api_id: str,
+            target_resource_id: str,
+            method: str,
+            path_with_query_string: str | None = None,
+            body: str = "",
+        ):
+            kwargs = {}
+            if path_with_query_string is not None:
+                kwargs["pathWithQueryString"] = path_with_query_string
+            res = aws_client.apigateway.test_invoke_method(
+                restApiId=api_id,
+                resourceId=target_resource_id,
+                httpMethod=method,
+                body=body,
+                **kwargs,
+            )
+            assert res.get("status") == 500
+            return res
+
+        response = retry(
+            invoke_method,
+            retries=10,
+            sleep=5,
+            api_id=rest_api_id,
+            target_resource_id=root_resource_id,
+            method="GET",
+        )
+        snapshot.match(
+            "test-invoke-failure",
+            apigw_test_invoke_response_formatter(response),
+        )
 
 
 class TestApigatewayIntegration:
@@ -3035,6 +3322,109 @@ class TestApigatewayIntegration:
             )
         snapshot.match("put-integration-request-param-bool-value", e.value.response)
 
+    @markers.aws.validated
+    def test_create_integration_with_vpc_link(
+        self, create_rest_apigw, aws_client, snapshot, region_name
+    ):
+        """
+        We cannot properly validate the CRUD logic of creating VPC Link, as they require an ELB Network Load Balancer
+        which are not implemented yet. But we can use stage variables to delay the evaluation of the real connection id
+        """
+        snapshot.add_transformer(snapshot.transform.key_value("cacheNamespace"))
+        rest_api_id, _, root_resource_id = create_rest_apigw(name="test vpc link")
+
+        aws_client.apigateway.put_method(
+            restApiId=rest_api_id,
+            resourceId=root_resource_id,
+            httpMethod="GET",
+            authorizationType="NONE",
+        )
+
+        # see example here:
+        # https://docs.aws.amazon.com/apigateway/latest/developerguide/set-up-api-with-vpclink-cli.html
+        put_integration = aws_client.apigateway.put_integration(
+            restApiId=rest_api_id,
+            resourceId=root_resource_id,
+            httpMethod="GET",
+            type="HTTP_PROXY",
+            uri=f"http://my-vpclink-test-nlb-1234567890abcdef.{region_name}.amazonaws.com",
+            integrationHttpMethod="GET",
+            connectionType="VPC_LINK",
+            connectionId="${stageVariables.vpcLinkId}",
+        )
+        snapshot.match("put-integration-vpc-link", put_integration)
+
+        get_integration = aws_client.apigateway.get_integration(
+            restApiId=rest_api_id,
+            resourceId=root_resource_id,
+            httpMethod="GET",
+        )
+        snapshot.match("get-integration-vpc-link", get_integration)
+
+        update_integration = aws_client.apigateway.update_integration(
+            restApiId=rest_api_id,
+            resourceId=root_resource_id,
+            httpMethod="GET",
+            patchOperations=[
+                {
+                    "op": "replace",
+                    "path": "/connectionId",
+                    "value": "${stageVariables.vpcLinkIdBeta}",
+                }
+            ],
+        )
+        snapshot.match("update-integration-vpc-link", update_integration)
+
+        get_integration_update = aws_client.apigateway.get_integration(
+            restApiId=rest_api_id,
+            resourceId=root_resource_id,
+            httpMethod="GET",
+        )
+        snapshot.match("get-integration-update-vpc-link", get_integration_update)
+
+    @markers.aws.validated
+    def test_get_integration_non_existent(
+        self, aws_client, apigw_create_rest_api, aws_client_factory, snapshot
+    ):
+        apigw_client = aws_client_factory(config=Config(parameter_validation=False)).apigateway
+        response = apigw_create_rest_api(
+            name=f"test-api-{short_uid()}",
+            description="APIGW test PutIntegration Types",
+        )
+        api_id = response["id"]
+        root_resource_id = response["rootResourceId"]
+
+        with pytest.raises(ClientError) as e:
+            apigw_client.get_integration(
+                restApiId=short_uid(), resourceId=root_resource_id, httpMethod="GET"
+            )
+        snapshot.match("get-integration-no-api", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            apigw_client.get_integration(restApiId=api_id, resourceId=short_uid(), httpMethod="GET")
+        snapshot.match("get-integration-no-resource", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            apigw_client.get_integration(
+                restApiId=api_id, resourceId=root_resource_id, httpMethod="GET"
+            )
+        snapshot.match("get-integration-no-method", e.value.response)
+
+        aws_client.apigateway.put_method(
+            restApiId=api_id,
+            resourceId=root_resource_id,
+            httpMethod="GET",
+            authorizationType="NONE",
+        )
+
+        with pytest.raises(ClientError) as e:
+            apigw_client.get_integration(
+                restApiId=api_id, resourceId=root_resource_id, httpMethod="GET"
+            )
+        snapshot.match("get-integration-no-integration", e.value.response)
+
+
+class TestApigatewayIntegrationResponse:
     @markers.aws.validated
     def test_integration_response_wrong_api(self, aws_client, apigw_create_rest_api, snapshot):
         with pytest.raises(ClientError) as e:
@@ -3401,6 +3791,8 @@ class TestApigatewayIntegration:
             )
         snapshot.match("bad-method", e.value.response)
 
+
+class TestApigatewayMethodResponse:
     @markers.aws.validated
     def test_update_method_wrong_param_names(self, aws_client, apigw_create_rest_api, snapshot):
         snapshot.add_transformer(snapshot.transform.key_value("cacheNamespace"))

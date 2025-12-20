@@ -6,6 +6,7 @@ from datetime import date, datetime
 import pytest
 import requests
 from botocore.exceptions import ClientError
+from localstack_snapshot.snapshots.transformer import SortingTransformer
 
 import localstack.config as config
 from localstack.services.ses.provider import EMAILS, EMAILS_ENDPOINT
@@ -286,6 +287,39 @@ class TestSES:
 
         _ = retry(_assert_sent_quota, expected_counter=counter + 1, retries=retries, sleep=1)
         # snapshot.match('get-quota-3', _)
+
+    @markers.aws.validated
+    def test_describe_config_set_event_destinations(
+        self,
+        aws_client,
+        sns_topic,
+        ses_configuration_set,
+        ses_configuration_set_sns_event_destination,
+        snapshot,
+    ):
+        config_set_name = f"config-set-{short_uid()}"
+        snapshot.add_transformer(snapshot.transform.regex(config_set_name, "<config-set-name>"))
+
+        topic_arn = sns_topic["Attributes"]["TopicArn"]
+        snapshot.add_transformer(snapshot.transform.regex(topic_arn, "<arn>"))
+
+        ses_configuration_set(config_set_name)
+        event_destination_name = f"config-set-event-destination-{short_uid()}"
+        snapshot.add_transformer(
+            snapshot.transform.regex(event_destination_name, "<event-destination-name>")
+        )
+
+        snapshot.add_transformer(SortingTransformer("MatchingEventTypes"))
+
+        ses_configuration_set_sns_event_destination(
+            config_set_name, event_destination_name, topic_arn
+        )
+
+        response = aws_client.ses.describe_configuration_set(
+            ConfigurationSetName=config_set_name,
+            ConfigurationSetAttributeNames=["eventDestinations"],
+        )
+        snapshot.match("event_destinations", response)
 
     @markers.aws.validated
     @markers.snapshot.skip_snapshot_verify(
@@ -1002,6 +1036,7 @@ class TestSES:
 
 @pytest.mark.usefixtures("openapi_validate")
 class TestSESRetrospection:
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_send_email_can_retrospect(self, aws_client):
         # Test that sent emails can be retrospected through saved file and API access
@@ -1082,6 +1117,7 @@ class TestSESRetrospection:
         assert requests.delete(emails_url + f"?id={message2_id}").status_code == 204
         assert requests.get(emails_url).json() == {"messages": []}
 
+    @markers.requires_in_process
     @markers.aws.only_localstack
     def test_send_templated_email_can_retrospect(self, create_template, aws_client):
         # Test that sent emails can be retrospected through saved file and API access
@@ -1122,3 +1158,13 @@ class TestSESRetrospection:
 
         assert requests.delete("http://localhost:4566/_aws/ses").status_code == 204
         assert requests.get("http://localhost:4566/_aws/ses").json() == {"messages": []}
+
+    @markers.aws.validated
+    def test_send_email_raises_message_rejected(self, aws_client):
+        raw_message_data = "From: origin@example.com\nTo: destination@example.com\nSubject: test\n\nThis is the message body.\n\n"
+
+        with pytest.raises(ClientError) as exc:
+            aws_client.ses.send_raw_email(
+                Destinations=["invalid@example.com"], RawMessage={"Data": raw_message_data}
+            )
+        assert exc.value.response["Error"]["Code"] == "MessageRejected"
